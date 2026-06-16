@@ -272,45 +272,6 @@ class QWABBias(nn.Module):
         return out.unsqueeze(1).to(dtype=hidden_states.dtype), branch_amp  # [B, 1, T, T], scalar
 
 
-class DAPEAliBiBias(nn.Module):
-    """DAPE-ALiBi: ALiBi base bias + cross-head adaptive correction MLP.
-
-    Formula: a_out = a_raw + b_alibi + MLP([a_raw, b_alibi])
-    MLP: R^{2H} -> R^H, weights shared across all position pairs (i, j).
-    Zero-init output layer: at init correction=0, model reduces to pure ALiBi.
-
-    Reference: DAPE (Ye et al. 2023) cross-head correction pattern applied to ALiBi base.
-    """
-
-    def __init__(self, num_heads: int, hidden_dim: int = 32):
-        super().__init__()
-        self.num_heads = num_heads
-        self.mlp = nn.Sequential(
-            nn.Linear(2 * num_heads, hidden_dim, bias=True),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, num_heads, bias=True),
-        )
-        nn.init.zeros_(self.mlp[-1].weight)
-        nn.init.zeros_(self.mlp[-1].bias)
-        # Marker: _init_weights must preserve zero-init so model reduces to pure ALiBi at t=0.
-        self.mlp[-1]._dape_zero_init = True
-
-    def forward(
-        self,
-        a_raw: torch.Tensor,    # [B, H, q, k] detached raw logits (pre-ALiBi)
-        alibi_bias: torch.Tensor,  # [H, q, k] or [1, H, q, k]
-    ) -> torch.Tensor:
-        """Returns adaptive correction [B, H, q, k] to add on top of a_raw + alibi_bias."""
-        if alibi_bias.dim() == 3:
-            alibi_bias = alibi_bias.unsqueeze(0)  # [H, q, k] → [1, H, q, k]
-        B, H, q, k = a_raw.shape
-        a = a_raw.permute(0, 2, 3, 1).float()                          # [B, q, k, H]
-        b = alibi_bias.permute(0, 2, 3, 1).expand(B, q, k, H).float() # [B, q, k, H]
-        feat = torch.cat([a, b], dim=-1)                                # [B, q, k, 2H]
-        correction = self.mlp(feat)                                     # [B, q, k, H]
-        return correction.permute(0, 3, 1, 2).to(dtype=a_raw.dtype)    # [B, H, q, k]
-
-
 def eager_attention_forward(module, query, key, value, attention_mask, head_mask=None, **kwargs):
     attn_weights = torch.matmul(query, key.transpose(-1, -2))
 
@@ -319,20 +280,26 @@ def eager_attention_forward(module, query, key, value, attention_mask, head_mask
     if wavelet_rel_buf is not None:
         q_len = query.size(-2)
         k_len = key.size(-2)
-        if hasattr(module, "_add_wavelet_rel_inplace"):
-            module._add_wavelet_rel_inplace(attn_weights, query, q_len, k_len, wavelet_rel_buf)
+        if hasattr(module, "_get_wavelet_relative_tensor"):
+            W = module._get_wavelet_relative_tensor(
+                q_len=q_len,
+                k_len=k_len,
+                device=query.device,
+                dtype=query.dtype,
+                base_tensor=wavelet_rel_buf,
+            )
         else:
             W = wavelet_rel_buf[:, :q_len, :k_len].to(device=query.device, dtype=query.dtype)  # [D, q_len, k_len]
-            attn_weights = attn_weights + torch.einsum("bhld,dln->bhln", query, W)
+        rel = torch.einsum("bhld,dln->bhln", query, W)
+        attn_weights = attn_weights + rel
 
     if module.scale_attn_weights:
         attn_weights = attn_weights / torch.full(
             [], value.size(-1) ** 0.5, dtype=attn_weights.dtype, device=attn_weights.device
         )
 
-    # ALiBi / DAPE-ALiBi position bias — applied AFTER QK scaling
-    _pe_method = getattr(getattr(module, 'config', None), 'pe_method', None)
-    if _pe_method in ('alibi', 'dape_alibi'):
+    # ALiBi linear position bias (pe_method='alibi') — applied AFTER QK scaling
+    if getattr(getattr(module, 'config', None), 'pe_method', None) == 'alibi':
         q_len = query.size(-2)
         k_len = key.size(-2)
         num_heads = query.size(1)
@@ -343,13 +310,7 @@ def eager_attention_forward(module, query, key, value, attention_mask, head_mask
         k_pos = torch.arange(k_len, device=query.device, dtype=torch.float32).unsqueeze(0)
         dist = (q_pos - k_pos).clamp(min=0).to(dtype=attn_weights.dtype)  # [q_len, k_len]
         alibi_bias = -slopes.view(num_heads, 1, 1) * dist.unsqueeze(0)    # [1, H, q_len, k_len]
-        if _pe_method == 'dape_alibi' and getattr(module, 'dape_alibi_module', None) is not None:
-            # DAPE-ALiBi: a_out = a_raw + b_alibi + MLP([a_raw, b_alibi])
-            a_raw = attn_weights.detach()  # detach: no double-gradient through QK
-            attn_weights = attn_weights + alibi_bias
-            attn_weights = attn_weights + module.dape_alibi_module(a_raw, alibi_bias)
-        else:
-            attn_weights = attn_weights + alibi_bias
+        attn_weights = attn_weights + alibi_bias
 
     # QWAB logit bias (Rotary + QWAB mode)
     _qwab_bias = kwargs.get("qwab_bias", None)
@@ -447,7 +408,7 @@ class GPT2PaTHAttention(nn.Module):
 
         self.layer_idx = layer_idx
         # 构造 PaTH 核心
-        if getattr(config, "_attn_implementation", getattr(config, "attn_implementation", None)) == "path_attn_wfreq":
+        if getattr(config, "attn_implementation", None) == "path_attn_wfreq":
             self.core = _PaTHAttentionWfreq(
                 hidden_size=config.hidden_size,
                 num_heads=getattr(config, "num_attention_heads", getattr(config, "n_head", None)),
@@ -467,7 +428,7 @@ class GPT2PaTHAttention(nn.Module):
                 use_soft_wavelet_fox=getattr(config, "use_soft_wavelet_fox", False),
                 wavelet_mode=getattr(config, "wavelet_mode", "router_rel"),
             )
-        elif getattr(config, "_attn_implementation", getattr(config, "attn_implementation", None)) == "path_attn":
+        elif getattr(config, "attn_implementation", None) == "path_attn":
             self.core = _PaTHAttention(
                 hidden_size=config.hidden_size,
                 num_heads=getattr(config, "num_attention_heads", getattr(config, "n_head", None)),
@@ -482,11 +443,11 @@ class GPT2PaTHAttention(nn.Module):
                 num_harmonics=getattr(config, "num_harmonics", 2),
                 use_soft_wavelet_fox=getattr(config, "use_soft_wavelet_fox", False),
                 wavelet_mode=getattr(config, "wavelet_mode", "router_rel"),
-                logging_steps = getattr(config, "logging_steps", 1000),
-                wavelet_baseline_use = getattr(config, "wavelet_baseline_use", False),
-                attn_pdrop = getattr(config, "attn_pdrop", 0.1),
-                init_theta = getattr(config, "init_theta", 0.847),
-                use_forget_gate = getattr(config, "use_forget_gate", False),
+                logging_steps = config.logging_steps,
+                wavelet_baseline_use = config.wavelet_baseline_use,
+                attn_pdrop = config.attn_pdrop,
+                init_theta = config.init_theta,   # initial theta for path attention ratio
+                use_forget_gate = config.use_forget_gate,
                 config=config,
             )
         self.resid_dropout = nn.Dropout(config.resid_pdrop)
@@ -576,12 +537,7 @@ class GPT2Attention(nn.Module):
             )
         else:
             self.router = None
-        self.qwab_bias_module = QWABBias(config) if _use_qwab_bias else None
-        self.dape_alibi_module = (
-            DAPEAliBiBias(self.num_heads)
-            if getattr(config, 'pe_method', 'vanilla') == 'dape_alibi'
-            else None
-        )
+        self.qwab_bias_module = QWABBias(config) if _use_qwab_bias else None            
         if self.head_dim * self.num_heads != self.embed_dim:
             raise ValueError(
                 f"`embed_dim` must be divisible by num_heads (got `embed_dim`: {self.embed_dim} and `num_heads`:"
@@ -707,67 +663,7 @@ class GPT2Attention(nn.Module):
         scales = self.wavelet_scales.to(device=device, dtype=dtype).view(-1, 1, 1)  # [D,1,1]
         shifts = self.wavelet_shifts.to(device=device, dtype=dtype).view(-1, 1, 1)  # [D,1,1]
         u = delta / scales - shifts
-        u.mul_(u)                                # in-place: u → u²
-        exp_term = torch.empty_like(u)
-        torch.mul(u, -0.5, out=exp_term)         # no intermediate: -0.5 * u²
-        exp_term.exp_()                          # in-place: exp(-0.5 * u²)
-        u.neg_().add_(1.0)                       # in-place: u → 1 - u²
-        return u.mul_(exp_term)                  # in-place: (1 - u²) * exp(-0.5 * u²)
-
-    def _add_wavelet_rel_inplace(
-        self,
-        attn_weights: torch.Tensor,
-        query: torch.Tensor,
-        q_len: int,
-        k_len: int,
-        base_tensor: Optional[torch.Tensor] = None,
-        d_chunk: int = 8,
-        q_chunk: int = 512,
-    ) -> None:
-        """Add wavelet relative bias directly into attn_weights in-place.
-
-        Double-chunked over D and q_len so the largest intermediate is
-        [d_chunk, q_chunk, k_len] instead of [D, q_len, k_len], avoiding OOM
-        at long sequence lengths (e.g. L=12288).
-        """
-        rel_buf = self.wavelet_relative_tensor if base_tensor is None else base_tensor
-        device, dtype = query.device, query.dtype
-
-        # Fast path: cached buffer covers requested length (L <= max_position_embeddings)
-        if rel_buf is not None and rel_buf.size(1) >= q_len and rel_buf.size(2) >= k_len:
-            W = rel_buf[:, :q_len, :k_len].to(device=device, dtype=dtype)
-            attn_weights.add_(torch.einsum("bhld,dln->bhln", query, W))
-            return
-
-        if self.wavelet_scales is None or self.wavelet_shifts is None:
-            raise RuntimeError("wavelet_scales/wavelet_shifts are required for dynamic wavelet relative tensor.")
-
-        scales = self.wavelet_scales.to(device=device, dtype=dtype)
-        shifts = self.wavelet_shifts.to(device=device, dtype=dtype)
-        D = scales.size(0)
-        j_idx = torch.arange(k_len, dtype=dtype, device=device).unsqueeze(0)  # [1, k_len]
-
-        for q0 in range(0, q_len, q_chunk):
-            q1 = min(q0 + q_chunk, q_len)
-            i_idx = torch.arange(q0, q1, dtype=dtype, device=device).unsqueeze(1)  # [qc, 1]
-            delta_q = i_idx - j_idx  # [qc, k_len]
-            q_slice = query[:, :, q0:q1, :]  # [B, H, qc, D]
-
-            for d0 in range(0, D, d_chunk):
-                d1 = min(d0 + d_chunk, D)
-                s_c = scales[d0:d1].view(-1, 1, 1)
-                t_c = shifts[d0:d1].view(-1, 1, 1)
-                u = delta_q.unsqueeze(0) / s_c - t_c  # [dc, qc, k_len]
-                u.mul_(u)                               # in-place: u → u²
-                exp_u = u.mul(-0.5).exp_()              # [dc, qc, k_len]
-                u.neg_().add_(1.0)                      # in-place: u → 1 - u²
-                W_c = u.mul_(exp_u)                     # in-place: (1-u²)·exp(-½u²)
-                del exp_u
-                # attn_weights[:, :, q0:q1, :] shape [B, H, qc, k_len]
-                attn_weights[:, :, q0:q1, :].add_(
-                    torch.einsum("bhld,dln->bhln", q_slice[..., d0:d1], W_c)
-                )
-                del u, W_c
+        return (1.0 - u * u) * torch.exp(-0.5 * u * u)
 
     def prune_heads(self, heads):
         if len(heads) == 0:
@@ -913,10 +809,10 @@ class GPT2Attention(nn.Module):
 
         using_eager = self.config._attn_implementation == "eager"
         attention_interface: Callable = eager_attention_forward
-        # wavelet/alibi/dape_alibi PE require eager (custom bias injected inside eager_attention_forward)
+        # wavelet/alibi PE require eager (custom bias injected inside eager_attention_forward)
         if self.config.pe_method == 'wavelet' and getattr(self.config, 'relative_type', None) == '4':
             using_eager = True
-        elif self.config.pe_method in ('alibi', 'dape_alibi'):
+        elif self.config.pe_method == 'alibi':
             using_eager = True
         elif self.config._attn_implementation != "eager" and self.config.pe_method != 'rotary':
             attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
@@ -967,7 +863,7 @@ class GPT2Attention(nn.Module):
             # Accumulate branch_amp as dis_loss for monitoring via training logs.
             # geom_p defaults to 0 so this does NOT affect the training loss unless explicitly set.
             _gate_sparse_loss = _gate_sparse_loss + _qwab_branch_amp
-        if using_eager and self.reorder_and_upcast_attn and self.config.pe_method not in ('rotary', 'wavelet', 'alibi', 'dape_alibi'):
+        if using_eager and self.reorder_and_upcast_attn and self.config.pe_method not in ('rotary', 'wavelet'):
             attn_output, attn_weights = self._upcast_and_reordered_attn(
                 query_states, key_states, value_states, attention_mask, head_mask
             )
@@ -1095,7 +991,7 @@ class GPT2Block(GradientCheckpointingLayer):
         inner_dim = config.n_inner if config.n_inner is not None else 4 * hidden_size
 
         self.ln_1 = nn.LayerNorm(hidden_size, eps=config.layer_norm_epsilon)
-        if getattr(config, "_attn_implementation", getattr(config, "attn_implementation", None)) in ["path_attn", "path_attn_wfreq"]:
+        if getattr(config, "attn_implementation", None) in ["path_attn", "path_attn_wfreq"]:
             self.attn = GPT2PaTHAttention(config=config, layer_idx=layer_idx)
         else:
             self.attn = GPT2Attention(config=config, layer_idx=layer_idx)
@@ -1298,31 +1194,16 @@ class GPT2PreTrainedModel(PreTrainedModel):
 
     _can_compile_fullgraph = True
 
-    # Custom attention implementations handled inside GPT2Model/GPT2Block directly;
-    # bypass the base-class validation so they don't raise ValueError.
-    _CUSTOM_ATTN_IMPLS = {"path_attn", "path_attn_wfreq"}
-
-    def get_correct_attn_implementation(self, requested_attention, is_init_check=False):
-        if requested_attention in self._CUSTOM_ATTN_IMPLS:
-            return requested_attention
-        return super().get_correct_attn_implementation(requested_attention, is_init_check)
-
     def __init__(self, *inputs, **kwargs):
         super().__init__(*inputs, **kwargs)
 
     def _init_weights(self, module):
         """Initialize the weights."""
         if isinstance(module, (nn.Linear, Conv1D)):
-            if getattr(module, '_dape_zero_init', False):
-                # DAPE correction output layer: must stay at zero so model = pure ALiBi at t=0.
-                module.weight.data.zero_()
-                if module.bias is not None:
-                    module.bias.data.zero_()
-            else:
-                std = getattr(module, "_path_small_init_std", self.config.initializer_range)
-                module.weight.data.normal_(mean=0.0, std=std)
-                if module.bias is not None:
-                    module.bias.data.zero_()
+            std = getattr(module, "_path_small_init_std", self.config.initializer_range)
+            module.weight.data.normal_(mean=0.0, std=std)
+            if module.bias is not None:
+                module.bias.data.zero_()
         elif isinstance(module, nn.Embedding):
             module.weight.data.normal_(mean=0.0, std=self.config.initializer_range)
             if module.padding_idx is not None:
@@ -1572,7 +1453,7 @@ class GPT2Model(GPT2PreTrainedModel):
         self.embed_dim = config.hidden_size
         self.wte = nn.Embedding(config.vocab_size, self.embed_dim)
         attn_impl = getattr(config, "attn_implementation", getattr(config, "_attn_implementation", "eager"))
-        if config.pe_method in ('no_pe', 'wavelet', 'alibi', 'dape_alibi'):
+        if config.pe_method in ('no_pe', 'wavelet', 'alibi'):
             pass
         else:
             if config.pe_method != 'rotary' and attn_impl == 'eager':
@@ -1594,48 +1475,48 @@ class GPT2Model(GPT2PreTrainedModel):
         self.config=config
         wavelet_mode = str(getattr(config, "wavelet_mode", "router_rel")).strip().lower()
         self._skip_wavelet_decay_table = wavelet_mode in ("logit_bias_ctxscale_shift_v0", "logit_bias_ctxscale_shift_v0_film")
-        self.scale_range = getattr(config, 'scale_range', [0, 16])
-        _scale_type = getattr(config, 'scale_type', 'none')
+        self.scale_range = config.scale_range
         self.s_tensor = None
         self.beta_tensor = None
+        if not self._skip_wavelet_decay_table:
+            if config.scale_type == 'learnable':
+                self.S = 8  # 你现在 interval 那套基本就是 8 个 scale
+
+                # 用你当前 custom 作为初始化
+                # 例如 scale_range=(0,16), interval=2 -> i=[0,2,4,...14]
+                init_exps = list(range(self.scale_range[0], self.scale_range[1], (self.scale_range[1]-self.scale_range[0])//self.S))
+                init_scales = torch.tensor([2**i for i in init_exps], dtype=torch.float32)  # [S]
+
+                # 初始化 a0 和 r：a0 = init_scales[0], r = (init_scales[-1]/init_scales[0])**(1/(S-1))
+                a0_init = init_scales[0].item()
+                r_init  = (init_scales[-1].item()/init_scales[0].item()) ** (1.0/(self.S-1))
+
+                self.theta_a0 = torch.nn.Parameter(torch.tensor([math.log(a0_init)], dtype=torch.float32, device='cuda'))
+                self.theta_r  = torch.nn.Parameter(torch.tensor([math.log(math.expm1(r_init-1))], dtype=torch.float32, device='cuda'))
+            if config.scale_type == 'custom':
+                self.s_tensor, self.beta_tensor = self.make_scale_shift_vectors()
+            elif config.scale_type == 'uniform':
+                self.s_tensor, self.beta_tensor = self.make_uniform_scale_shift_vectors()
+            elif config.scale_type == 'learnable':
+                pass
+            elif config.scale_type == 'none':
+                self.s_tensor = None
+                self.beta_tensor = None
+            else:
+                raise ValueError(f"Unknown scale_type: {config.scale_type}")
         self.d_m = None
-        if _scale_type not in ('none', None):
-            if not self._skip_wavelet_decay_table:
-                if _scale_type == 'learnable':
-                    self.S = 8  # 你现在 interval 那套基本就是 8 个 scale
-
-                    # 用你当前 custom 作为初始化
-                    # 例如 scale_range=(0,16), interval=2 -> i=[0,2,4,...14]
-                    init_exps = list(range(self.scale_range[0], self.scale_range[1], (self.scale_range[1]-self.scale_range[0])//self.S))
-                    init_scales = torch.tensor([2**i for i in init_exps], dtype=torch.float32)  # [S]
-
-                    # 初始化 a0 和 r：a0 = init_scales[0], r = (init_scales[-1]/init_scales[0])**(1/(S-1))
-                    a0_init = init_scales[0].item()
-                    r_init  = (init_scales[-1].item()/init_scales[0].item()) ** (1.0/(self.S-1))
-
-                    self.theta_a0 = torch.nn.Parameter(torch.tensor([math.log(a0_init)], dtype=torch.float32, device='cuda'))
-                    self.theta_r  = torch.nn.Parameter(torch.tensor([math.log(math.expm1(r_init-1))], dtype=torch.float32, device='cuda'))
-                if _scale_type == 'custom':
-                    self.s_tensor, self.beta_tensor = self.make_scale_shift_vectors()
-                elif _scale_type == 'uniform':
-                    self.s_tensor, self.beta_tensor = self.make_uniform_scale_shift_vectors()
-                elif _scale_type == 'learnable':
-                    pass
-                else:
-                    raise ValueError(f"Unknown scale_type: {_scale_type}")
-            _block_size = getattr(config, 'block_size', config.n_positions)
-            if (not self._skip_wavelet_decay_table) and _scale_type != 'learnable':
-                use_time_shift = getattr(config, 'use_time_shift', False)
-                if use_time_shift:
-                    K = getattr(config, 'shift_bucket_K', 4)
-                    # bucket_offsets = torch.tensor([0] + [16*j + 8 for j in range(1, K)], device=self.s_tensor.device)
-                    bucket_offsets = build_bucket_offsets(T=_block_size, K=K, config=config)
-                    self.d_m = self.make_decay_per_dim_custom_bucketed(64, _block_size, self.s_tensor, self.beta_tensor, bucket_offsets)
-                else:
-                    self.d_m = self.make_decay_per_dim_custom(64, _block_size, self.s_tensor, self.beta_tensor)
+        if (not self._skip_wavelet_decay_table) and config.scale_type != 'learnable':
+            use_time_shift = getattr(config, 'use_time_shift', False)
+            if use_time_shift:
+                K = getattr(config, 'shift_bucket_K', 4)
+                # bucket_offsets = torch.tensor([0] + [16*j + 8 for j in range(1, K)], device=self.s_tensor.device)
+                bucket_offsets = build_bucket_offsets(T=config.block_size, K=K, config=config)
+                self.d_m = self.make_decay_per_dim_custom_bucketed(64, config.block_size, self.s_tensor, self.beta_tensor, bucket_offsets)
+            else:
+                self.d_m = self.make_decay_per_dim_custom(64, config.block_size, self.s_tensor, self.beta_tensor)
         # if config.wavelet_router:
         #     self.d_m, _, _, _ = build_wavelet_dtt_bands(self.d_m)
-        if getattr(config, 'analyzer', False):
+        if config.analyzer:
             # self.analyzer = LayerAttentionAnalyzer(num_layers=config.num_hidden_layers, num_heads=12)
             # self.analyzer.reset()
             # self.scale_wise_analyzer = ScaleWiseAnalyzer(n_layers=config.num_hidden_layers, n_heads=12, head_dim=64, device='cuda', save_dir=f'scale_wise_analyzer_logs_{config.model_name_or_path}')
@@ -2126,7 +2007,7 @@ class GPT2Model(GPT2PreTrainedModel):
         elif self.config.pe_method == 'rotary':
             assert attn_impl == "eager", "only in eager mode you can use rotary."
             hidden_states = inputs_embeds
-        elif self.config.pe_method in ('no_pe', 'wavelet', 'alibi', 'dape_alibi'):
+        elif self.config.pe_method in ('no_pe', 'wavelet', 'alibi'):
             hidden_states = inputs_embeds
         else:
             position_embeds = self.wpe(position_ids)
