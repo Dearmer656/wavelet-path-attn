@@ -54,6 +54,7 @@ for L in ${LENGTHS}; do
     --dataset_name hotpot_qa --dataset_config_name distractor \
     --hotpot_long_jsonl "${JSONL}" --hotpot_long_lengths "${L}" \
     --do_eval --block_size "${L}" --per_device_eval_batch_size 4 \
+    --eval_generate_no_cache True \
     --output_dir "${OUT}" --overwrite_output_dir --logging_dir "${OUT}/log" \
     --seed 42 --load_best_model_at_end False
   python3 -c "import json;d=json.load(open('${OUT}/eval_results.json'));print('[RESULT] ${MODELNAME} L${L}: F1=%.4f EM=%.4f loss=%.4f'%(d.get('eval_f1',-1),d.get('eval_em',-1),d.get('eval_loss',-1)))" 2>/dev/null || true

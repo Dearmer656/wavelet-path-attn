@@ -17,11 +17,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from transformers import AutoModelForCausalLM  # noqa: E402
 from motif_substitution import apply_motif_substitution, select_broken_heads  # noqa: E402
 
-_MODE = os.environ.get("MOTIF_MODE", "real")
+_MODE = os.environ.get("MOTIF_MODE", "real")      # off | nope_only | real | shuffled_* | wrong_head | random_matched
 _NPZ = os.environ.get("MOTIF_NPZ", "")
 _CSV = os.environ.get("MOTIF_RECON_CSV", "")
 _TOPK = int(os.environ.get("MOTIF_TOPK", "16"))
 _LAM = float(os.environ.get("MOTIF_LAM", "1.0"))
+_TAIL = os.environ.get("MOTIF_TAIL", "hold_last")
+_MIN_VE = float(os.environ.get("MOTIF_MIN_TRAIN_VE", "0.3"))
 _orig = AutoModelForCausalLM.from_pretrained
 
 
@@ -29,12 +31,13 @@ def _patched(*args, **kwargs):
     ret = _orig(*args, **kwargs)
     model = ret[0] if isinstance(ret, tuple) else ret
     if _MODE == "off":
-        print("[PAT-217] MOTIF_MODE=off — unmodified baseline", flush=True)
+        print("[PAT-217] MOTIF_MODE=off — unmodified all-RoPE baseline", flush=True)
         return ret
     nl = int(getattr(model.config, "n_layer", 12))
     nh = int(getattr(model.config, "n_head", 12))
-    broken = select_broken_heads(_CSV, _TOPK)
-    apply_motif_substitution(model, _NPZ, broken, lam=_LAM, mode=_MODE, nl=nl, nh=nh)
+    broken = select_broken_heads(_CSV, _TOPK, npz_path=_NPZ, min_train_ve=_MIN_VE, nh=nh)
+    print(f"[PAT-217] selected broken heads (train_ve>={_MIN_VE}, top{_TOPK}): {broken}", flush=True)
+    apply_motif_substitution(model, _NPZ, broken, lam=_LAM, mode=_MODE, nl=nl, nh=nh, tail=_TAIL)
     return ret
 
 
