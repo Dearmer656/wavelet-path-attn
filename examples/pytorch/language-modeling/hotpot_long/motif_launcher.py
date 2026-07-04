@@ -35,8 +35,15 @@ def _patched(*args, **kwargs):
         return ret
     nl = int(getattr(model.config, "n_layer", 12))
     nh = int(getattr(model.config, "n_head", 12))
-    broken = select_broken_heads(_CSV, _TOPK, npz_path=_NPZ, min_train_ve=_MIN_VE, nh=nh)
-    print(f"[PAT-217] selected broken heads (train_ve>={_MIN_VE}, top{_TOPK}): {broken}", flush=True)
+    import re as _re
+    _layers_env = os.environ.get("MOTIF_LAYERS", "")
+    if _layers_env:                              # explicit layers: ALL heads of these layers (PAT-204 style)
+        layers = [int(x) for x in _re.split(r"[^0-9]+", _layers_env) if x]
+        broken = [(l, h) for l in layers for h in range(nh)]
+        print(f"[PAT-217] broken heads = ALL heads of layers {layers} ({len(broken)} heads)", flush=True)
+    else:
+        broken = select_broken_heads(_CSV, _TOPK, npz_path=_NPZ, min_train_ve=_MIN_VE, nh=nh)
+        print(f"[PAT-217] selected broken heads (train_ve>={_MIN_VE}, top{_TOPK}): {broken}", flush=True)
     apply_motif_substitution(model, _NPZ, broken, lam=_LAM, mode=_MODE, nl=nl, nh=nh, tail=_TAIL)
     return ret
 

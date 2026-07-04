@@ -17,10 +17,13 @@ Control modes: real | nope_only | shuffled_offset | shuffled_sink | shuffled_bot
 wrong_head | random_matched.
 Tail-extension modes for s(δ>L0): hold_last | median_last64 | zero | exp_decay.
 """
+import os
 import numpy as np
 import torch
 
 _PATCHED = False
+_DBG = os.environ.get("MOTIF_DEBUG", "") == "1"
+_dbg = {"n": 0, "inj": 0, "seen": 0}
 _CACHE_MAX_T = 1024   # cache full [1,nh,T,T] only for small T (training); rebuild+free for eval
 
 
@@ -86,6 +89,13 @@ def _install_eager_patch(tail):
             q_len, k_len = query.size(-2), key.size(-2)
             s_lay, v_lay, hmask, lam, L0 = sv
             dev, dt = query.device, query.dtype
+            if _DBG:
+                _dbg["seen"] += 1
+                inj = (q_len == k_len) or (q_len == 1 and k_len > 1)
+                _dbg["inj"] += int(inj)
+                if _dbg["n"] < 60:
+                    print(f"[MOTIF_DBG] L{getattr(module,'layer_idx','?')} q={q_len} k={k_len} "
+                          f"inj={inj}", flush=True); _dbg["n"] += 1
             if q_len == k_len:
                 cache = getattr(module, "_motif_bias_cache", {})
                 if q_len in cache:
