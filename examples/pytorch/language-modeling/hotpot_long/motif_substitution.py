@@ -63,16 +63,17 @@ def _extend_v(v_row, L0, T):
     return v[:T]
 
 
-def _build_layer_bias(s_lay, v_lay, hmask, lam, L0, T, device, dtype, tail):
-    """[1, nh, T, T] additive logit bias; nonzero only on selected heads."""
+def _build_layer_bias(s_lay, v_lay, hmask, lam_lay, L0, T, device, dtype, tail):
+    """[1, nh, T, T] additive logit bias; nonzero only on selected heads.
+    lam_lay: per-head scale [nh] (adaptive λ_h), so more-broken heads can get more motif."""
     nh = s_lay.shape[0]
     off = np.clip(np.arange(T)[:, None] - np.arange(T)[None, :], 0, T - 1)
     B = np.zeros((nh, T, T), dtype=np.float32)
     for h in range(nh):
-        if hmask[h] <= 0:
+        if hmask[h] <= 0 or lam_lay[h] == 0:
             continue
         s = _extend_s(s_lay[h], L0, T, tail); v = _extend_v(v_lay[h], L0, T)
-        B[h] = lam * (s[off] + v[None, :])
+        B[h] = lam_lay[h] * (s[off] + v[None, :])
     return torch.from_numpy(B).unsqueeze(0).to(device=device, dtype=dtype)
 
 
@@ -159,10 +160,34 @@ def _apply_control(S, V, L0, mode, rng):
     return S, V
 
 
+def compute_adaptive_lam(recon_csv, npz_path, broken_heads, lam_base=1.0, mode="recon",
+                         min_train_ve=0.3, nl=12, nh=12, lam_max=3.0):
+    """Per-head adaptive λ tied to the OOD reconstruction error (more-broken heads get more
+    motif). λ_h = lam_base · (rmse_h / mean_rmse_over_selected) · [train_var_explained_h≥thr],
+    clipped to [0, lam_max]. Returns lam_vec [nl*nh] (0 on non-selected heads)."""
+    import csv
+    rmse = np.zeros(nl * nh)
+    with open(recon_csv) as f:
+        for r in csv.DictReader(f):
+            rmse[int(r["layer"]) * nh + int(r["head"])] = float(r["ood_rmse"])
+    ve = np.load(npz_path)["var_explained"] if npz_path else np.ones(nl * nh)
+    sel = np.array([l * nh + h for (l, h) in broken_heads])
+    lam_vec = np.zeros(nl * nh, np.float32)
+    if mode == "const":
+        lam_vec[sel] = lam_base
+        return lam_vec
+    mean_r = rmse[sel].mean() + 1e-9
+    for idx in sel:
+        gate = 1.0 if ve[idx] >= min_train_ve else 0.0
+        lam_vec[idx] = float(np.clip(lam_base * (rmse[idx] / mean_r) * gate, 0.0, lam_max))
+    return lam_vec
+
+
 def apply_motif_substitution(model, npz_path, broken_heads, lam=1.0, mode="real",
                              nl=12, nh=12, seed=0, tail="hold_last"):
     """mode in {real, nope_only(=none), shuffled_offset, shuffled_sink, shuffled_both,
-    wrong_head, random_matched}."""
+    wrong_head, random_matched}. `lam` is a scalar OR a per-(l*nh+h) array [nl*nh]
+    (adaptive λ_h from compute_adaptive_lam)."""
     import os
     assert os.path.exists(npz_path), f"missing motif npz {npz_path}"
     d = np.load(npz_path)
@@ -173,6 +198,8 @@ def apply_motif_substitution(model, npz_path, broken_heads, lam=1.0, mode="real"
     use_motif = mode not in ("nope_only", "none")
     if use_motif:
         S, V = _apply_control(S, V, L0, mode, rng)
+    lam_vec = (np.asarray(lam, np.float32) if np.ndim(lam) > 0
+               else np.full(nl * nh, float(lam), np.float32))    # per-head λ
 
     per_layer_mask = {l: np.zeros(nh, np.float32) for l in range(nl)}
     for (l, h) in broken_heads:
@@ -192,12 +219,13 @@ def apply_motif_substitution(model, npz_path, broken_heads, lam=1.0, mode="real"
             mod.rotary_emb.rotate_queries_or_keys = make_masked_rotate(
                 mod.rotary_emb.rotate_queries_or_keys, torch.tensor(hm))
             mod.rotary_emb._motif_patched = True
-        if use_motif:                                                # (b) stash motif tables
+        if use_motif:                                                # (b) stash motif tables + per-head λ
             idx = [l * nh + h for h in range(nh)]
-            mod._motif_sv = (S[idx], V[idx], hm, float(lam), L0)
+            mod._motif_sv = (S[idx], V[idx], hm, lam_vec[idx], L0)
             mod._motif_bias_cache = {}
         n_heads += int(hm.sum())
-    print(f"[PAT-217] substitution mode={mode} lam={lam} tail={tail} motif={use_motif} "
-          f"on {n_heads} heads ({len(broken_heads)} (l,h))", flush=True)
+    _lsel = lam_vec[[l * nh + h for (l, h) in broken_heads]]
+    print(f"[PAT-217] substitution mode={mode} tail={tail} motif={use_motif} on {n_heads} heads; "
+          f"λ per-head min/mean/max={_lsel.min():.2f}/{_lsel.mean():.2f}/{_lsel.max():.2f}", flush=True)
     assert n_heads == len(broken_heads), "installed head count != requested"
     return n_heads

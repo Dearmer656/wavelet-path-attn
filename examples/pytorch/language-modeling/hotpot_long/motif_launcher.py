@@ -15,7 +15,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from transformers import AutoModelForCausalLM  # noqa: E402
-from motif_substitution import apply_motif_substitution, select_broken_heads  # noqa: E402
+from motif_substitution import (apply_motif_substitution, select_broken_heads,  # noqa: E402
+                                compute_adaptive_lam)
 
 _MODE = os.environ.get("MOTIF_MODE", "real")      # off | nope_only | real | shuffled_* | wrong_head | random_matched
 _NPZ = os.environ.get("MOTIF_NPZ", "")
@@ -44,7 +45,11 @@ def _patched(*args, **kwargs):
     else:
         broken = select_broken_heads(_CSV, _TOPK, npz_path=_NPZ, min_train_ve=_MIN_VE, nh=nh)
         print(f"[PAT-217] selected broken heads (train_ve>={_MIN_VE}, top{_TOPK}): {broken}", flush=True)
-    apply_motif_substitution(model, _NPZ, broken, lam=_LAM, mode=_MODE, nl=nl, nh=nh, tail=_TAIL)
+    _lam_mode = os.environ.get("MOTIF_LAM_MODE", "const")   # const | recon (adaptive λ_h ∝ ood_rmse)
+    lam = (_LAM if _lam_mode == "const"
+           else compute_adaptive_lam(_CSV, _NPZ, broken, lam_base=_LAM, mode="recon",
+                                     min_train_ve=_MIN_VE, nl=nl, nh=nh))
+    apply_motif_substitution(model, _NPZ, broken, lam=lam, mode=_MODE, nl=nl, nh=nh, tail=_TAIL)
     return ret
 
 
