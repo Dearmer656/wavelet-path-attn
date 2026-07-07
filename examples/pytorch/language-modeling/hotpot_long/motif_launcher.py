@@ -25,6 +25,8 @@ _TOPK = int(os.environ.get("MOTIF_TOPK", "16"))
 _LAM = float(os.environ.get("MOTIF_LAM", "1.0"))
 _TAIL = os.environ.get("MOTIF_TAIL", "hold_last")
 _MIN_VE = float(os.environ.get("MOTIF_MIN_TRAIN_VE", "0.3"))
+_DIMSEL = os.environ.get("MOTIF_DIM_SELECTIVE", "0") == "1"   # PAT-208 low-freq-dim NoPE
+_PCUT = float(os.environ.get("MOTIF_PERIOD_CUTOFF", "512"))
 _orig = AutoModelForCausalLM.from_pretrained
 
 
@@ -49,7 +51,8 @@ def _patched(*args, **kwargs):
     lam = (_LAM if _lam_mode == "const"
            else compute_adaptive_lam(_CSV, _NPZ, broken, lam_base=_LAM, mode="recon",
                                      min_train_ve=_MIN_VE, nl=nl, nh=nh))
-    apply_motif_substitution(model, _NPZ, broken, lam=lam, mode=_MODE, nl=nl, nh=nh, tail=_TAIL)
+    apply_motif_substitution(model, _NPZ, broken, lam=lam, mode=_MODE, nl=nl, nh=nh, tail=_TAIL,
+                             dim_selective=_DIMSEL, period_cutoff=_PCUT)
     return ret
 
 

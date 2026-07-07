@@ -39,6 +39,33 @@ def make_masked_rotate(orig_rotate, nope_mask):
     return wrapped
 
 
+def make_dim_masked_rotate(orig_rotate, dim_mask):
+    """PAT-208 dim-selective NoPE: masked feature DIMS keep their UN-rotated q/k (identity
+    rotation), the rest keep standard RoPE — frequency-truncated RoPE, applied to all heads
+    of the layer. dim_mask: [D] float, 1.0 = NoPE on that dim."""
+    D = int(dim_mask.numel())
+
+    def wrapped(t, *a, **kw):
+        rot = orig_rotate(t, *a, **kw)
+        if t.shape[-1] == D:
+            m = dim_mask.to(device=rot.device, dtype=rot.dtype)
+            return rot * (1.0 - m) + t * m
+        return rot
+    return wrapped
+
+
+def build_lowfreq_dim_mask(freqs, head_dim, period_cutoff):
+    """[head_dim] mask = 1.0 on dims of 2D pairs whose RoPE period P_m>period_cutoff."""
+    inv = freqs.detach().float().cpu().numpy()
+    periods = 2.0 * np.pi / np.clip(inv, 1e-12, None)
+    mask = np.zeros(head_dim, np.float32)
+    n_pairs = head_dim // 2; n_off = 0
+    for mi in range(min(n_pairs, len(periods))):
+        if periods[mi] > period_cutoff:
+            mask[2 * mi] = 1.0; mask[2 * mi + 1] = 1.0; n_off += 1
+    return mask, n_off
+
+
 def _extend_s(s_row, L0, T, tail="hold_last"):
     s = np.empty(T, np.float32); s[:L0] = s_row
     if T <= L0:
@@ -184,10 +211,17 @@ def compute_adaptive_lam(recon_csv, npz_path, broken_heads, lam_base=1.0, mode="
 
 
 def apply_motif_substitution(model, npz_path, broken_heads, lam=1.0, mode="real",
-                             nl=12, nh=12, seed=0, tail="hold_last"):
+                             nl=12, nh=12, seed=0, tail="hold_last",
+                             dim_selective=False, period_cutoff=512.0):
     """mode in {real, nope_only(=none), shuffled_offset, shuffled_sink, shuffled_both,
     wrong_head, random_matched}. `lam` is a scalar OR a per-(l*nh+h) array [nl*nh]
-    (adaptive λ_h from compute_adaptive_lam)."""
+    (adaptive λ_h from compute_adaptive_lam).
+
+    dim_selective (PAT-217×PAT-208): if True, NoPE is applied ONLY on the low-freq
+    (period P_m>period_cutoff) DIMS of every patched layer (all heads), keeping high-freq
+    dims on standard RoPE — instead of full-head NoPE. Pair with the low-freq RESIDUAL motif
+    (distill_bias_lowfreq.py) so the frozen structure stacks on live NoPE content-QK without
+    double-counting. broken_heads then selects which heads receive the motif bias."""
     import os
     assert os.path.exists(npz_path), f"missing motif npz {npz_path}"
     d = np.load(npz_path)
@@ -215,9 +249,15 @@ def apply_motif_substitution(model, npz_path, broken_heads, lam=1.0, mode="real"
         l = int(m.group(1)); hm = per_layer_mask[l]
         if hm.sum() == 0:
             continue
-        if not getattr(mod.rotary_emb, "_motif_patched", False):     # (a) NoPE on selected heads
-            mod.rotary_emb.rotate_queries_or_keys = make_masked_rotate(
-                mod.rotary_emb.rotate_queries_or_keys, torch.tensor(hm))
+        if not getattr(mod.rotary_emb, "_motif_patched", False):     # (a) NoPE
+            if dim_selective:                                        # low-freq DIMS, all heads
+                D = int(model.config.n_embd // nh)
+                dmask, n_off = build_lowfreq_dim_mask(mod.rotary_emb.freqs, D, period_cutoff)
+                mod.rotary_emb.rotate_queries_or_keys = make_dim_masked_rotate(
+                    mod.rotary_emb.rotate_queries_or_keys, torch.tensor(dmask))
+            else:                                                    # full-head NoPE on selected heads
+                mod.rotary_emb.rotate_queries_or_keys = make_masked_rotate(
+                    mod.rotary_emb.rotate_queries_or_keys, torch.tensor(hm))
             mod.rotary_emb._motif_patched = True
         if use_motif:                                                # (b) stash motif tables + per-head λ
             idx = [l * nh + h for h in range(nh)]
@@ -225,7 +265,9 @@ def apply_motif_substitution(model, npz_path, broken_heads, lam=1.0, mode="real"
             mod._motif_bias_cache = {}
         n_heads += int(hm.sum())
     _lsel = lam_vec[[l * nh + h for (l, h) in broken_heads]]
-    print(f"[PAT-217] substitution mode={mode} tail={tail} motif={use_motif} on {n_heads} heads; "
-          f"λ per-head min/mean/max={_lsel.min():.2f}/{_lsel.mean():.2f}/{_lsel.max():.2f}", flush=True)
+    _nope = f"lowfreq-dims(P>{period_cutoff})" if dim_selective else "full-head"
+    print(f"[PAT-217] substitution mode={mode} nope={_nope} tail={tail} motif={use_motif} "
+          f"on {n_heads} heads; λ per-head min/mean/max="
+          f"{_lsel.min():.2f}/{_lsel.mean():.2f}/{_lsel.max():.2f}", flush=True)
     assert n_heads == len(broken_heads), "installed head count != requested"
     return n_heads
