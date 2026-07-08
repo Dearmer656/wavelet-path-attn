@@ -147,8 +147,8 @@ def run(a):
             qp = (q_post * dm_dev); kp = (k_post * dm_dev)   # low-freq post-RoPE
             qn = (q_pre  * dm_dev); kn = (k_pre  * dm_dev)   # low-freq pre-RoPE (NoPE)
 
-            B_rope = torch.einsum("htd,hsd->hts", qp, kp).numpy() * scale
-            B_nope = torch.einsum("htd,hsd->hts", qn, kn).numpy() * scale
+            B_rope = torch.einsum("htd,hsd->hts", qp, kp).cpu().numpy() * scale
+            B_nope = torch.einsum("htd,hsd->hts", qn, kn).cpu().numpy() * scale
             Bsum[li] += (B_rope - B_nope)
 
         print(f"  case {ci} done", flush=True)
