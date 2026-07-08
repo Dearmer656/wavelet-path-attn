@@ -30,49 +30,54 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 from transformers.models.llama.modeling_llama import repeat_kv
 
 
-# ── bias helpers (reuse PAT-217 logic) ───────────────────────────────────────
-def _extend_s(s_row, L0, T, tail="hold_last"):
-    s = np.empty(T, np.float32); s[:min(L0, T)] = s_row[:min(L0, T)]
-    if T > L0:
-        if tail == "hold_last":
-            s[L0:] = s_row[L0 - 1]
-        else:
-            s[L0:] = 0.0
-    return s
+# ── bias helpers — GPU-native, no large numpy arrays ─────────────────────────
+
+def _extend_s_np(s_row, L0, T):
+    """1-D numpy extend (cheap, O(T) not O(T^2))."""
+    if T <= L0:
+        return s_row[:T]
+    out = np.empty(T, np.float32)
+    out[:L0] = s_row; out[L0:] = s_row[L0 - 1]
+    return out
 
 
-def _extend_v(v_row, L0, T):
-    v = np.empty(T, np.float32); v[:min(L0, T)] = v_row[:min(L0, T)]
-    if T > L0:
-        v[L0:] = float(np.median(v_row[64:L0]) if L0 > 64 else 0.0)
-    return v
+def _extend_v_np(v_row, L0, T):
+    if T <= L0:
+        return v_row[:T]
+    out = np.empty(T, np.float32)
+    out[:L0] = v_row
+    out[L0:] = float(np.median(v_row[64:L0]) if L0 > 64 else 0.0)
+    return out
 
 
 def _build_bias_matrix(s_tab, v_tab, nl, nh, layer_idx, T, device, dtype, lam=1.0):
-    """[1, nh, T, T] bias for full prefill."""
+    """[1, nh, T, T] bias — all heavy work on GPU, only O(nh*T) numpy transfer."""
     base = layer_idx * nh
-    off = np.clip(np.arange(T)[:, None] - np.arange(T)[None, :], 0, T - 1)
-    B = np.zeros((nh, T, T), np.float32)
-    L0 = s_tab.shape[1]
-    for h in range(nh):
-        s = _extend_s(s_tab[base + h], L0, T)
-        v = _extend_v(v_tab[base + h], L0, T)
-        B[h] = lam * (s[off] + v[None, :])
-    return torch.from_numpy(B).unsqueeze(0).to(device=device, dtype=dtype)
+    L0   = s_tab.shape[1]
+    # Upload 1-D s/v vectors per head (cheap: nh*T*4 bytes << T^2*4 bytes)
+    s_np = np.stack([_extend_s_np(s_tab[base + h], L0, T) for h in range(nh)])  # [nh, T]
+    v_np = np.stack([_extend_v_np(v_tab[base + h], L0, T) for h in range(nh)])  # [nh, T]
+    s_t  = torch.from_numpy(s_np).to(device=device, dtype=dtype)  # [nh, T]
+    v_t  = torch.from_numpy(v_np).to(device=device, dtype=dtype)  # [nh, T]
+    # Build O(T^2) on GPU via broadcast gather (single kernel, fast)
+    idx  = torch.arange(T, device=device)
+    off  = (idx.unsqueeze(1) - idx.unsqueeze(0)).clamp(0, T - 1)  # [T, T]
+    bias = lam * (s_t[:, off] + v_t.unsqueeze(1))                  # [nh, T, T]
+    return bias.unsqueeze(0)                                        # [1, nh, T, T]
 
 
 def _build_bias_row(s_tab, v_tab, nl, nh, layer_idx, pos, k_len, device, dtype, lam=1.0):
-    """[1, nh, 1, k_len] bias for a single query at absolute position pos (decode)."""
+    """[1, nh, 1, k_len] bias for a single query at absolute position pos."""
     base = layer_idx * nh
-    j = np.arange(k_len)
-    deltas = np.clip(pos - j, 0, k_len - 1)
-    B = np.zeros((nh, 1, k_len), np.float32)
-    L0 = s_tab.shape[1]
-    for h in range(nh):
-        s = _extend_s(s_tab[base + h], L0, k_len)
-        v = _extend_v(v_tab[base + h], L0, k_len)
-        B[h, 0] = lam * (s[deltas] + v[j])
-    return torch.from_numpy(B).unsqueeze(0).to(device=device, dtype=dtype)
+    L0   = s_tab.shape[1]
+    s_np = np.stack([_extend_s_np(s_tab[base + h], L0, k_len) for h in range(nh)])  # [nh, k_len]
+    v_np = np.stack([_extend_v_np(v_tab[base + h], L0, k_len) for h in range(nh)])  # [nh, k_len]
+    s_t  = torch.from_numpy(s_np).to(device=device, dtype=dtype)
+    v_t  = torch.from_numpy(v_np).to(device=device, dtype=dtype)
+    j    = torch.arange(k_len, device=device)
+    d    = (pos - j).clamp(0, k_len - 1)                          # [k_len]
+    bias = lam * (s_t[:, d] + v_t)                                 # [nh, k_len]
+    return bias.unsqueeze(0).unsqueeze(2)                           # [1, nh, 1, k_len]
 
 
 # ── Llama attention patching ──────────────────────────────────────────────────
