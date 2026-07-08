@@ -93,10 +93,9 @@ _BIAS_CACHE = {}
 
 
 def _install_pre_rope_hook(model):
-    """Capture pre-rotation Q/K per layer so we can zero out low-freq RoPE in patched_eager."""
+    """Capture pre-rotation Q/K per layer — Llama version (full head_dim)."""
     import transformers.models.llama.modeling_llama as _LM
 
-    # Reset counter at each model.forward() call (each decode step with use_cache=False)
     def _reset_hook(module, inp):
         _PRE_LAYER_CTR[0] = 0
         _PRE_ROPE_CACHE.clear()
@@ -105,11 +104,30 @@ def _install_pre_rope_hook(model):
     orig_rotary = _LM.apply_rotary_pos_emb
     def _capture_rotary(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
         li = _PRE_LAYER_CTR[0]
-        _PRE_ROPE_CACHE[li] = (q, k)   # GPU tensors, not copied
+        _PRE_ROPE_CACHE[li] = (q, k)
         q_r, k_r = orig_rotary(q, k, cos, sin, position_ids, unsqueeze_dim)
         _PRE_LAYER_CTR[0] += 1
         return q_r, k_r
     _LM.apply_rotary_pos_emb = _capture_rotary
+
+
+def _install_pre_rope_hook_phi(model):
+    """Capture pre-rotation Q/K per layer — Phi version (partial rot_dim only)."""
+    import transformers.models.phi.modeling_phi as _PHI
+
+    def _reset_hook(module, inp):
+        _PRE_LAYER_CTR[0] = 0
+        _PRE_ROPE_CACHE.clear()
+    model.model.register_forward_pre_hook(_reset_hook)
+
+    orig_rotary = _PHI.apply_rotary_pos_emb
+    def _capture_rotary(q, k, cos, sin, position_ids, unsqueeze_dim=1):
+        li = _PRE_LAYER_CTR[0]
+        _PRE_ROPE_CACHE[li] = (q, k)   # [B, nh/nkv, T, rot_dim]
+        q_r, k_r = orig_rotary(q, k, cos, sin, position_ids, unsqueeze_dim)
+        _PRE_LAYER_CTR[0] += 1
+        return q_r, k_r
+    _PHI.apply_rotary_pos_emb = _capture_rotary
 
 
 def patch_llama_attention(model, s_tab, v_tab, nl, nh, lf_mask_np,
@@ -194,6 +212,115 @@ def patch_llama_attention(model, s_tab, v_tab, nl, nh, lf_mask_np,
     _LM.eager_attention_forward = patched_eager
 
 
+def patch_phi_attention(model, s_tab, v_tab, nl, nh, lf_mask_np, lam=1.0):
+    """Patch PhiAttention.forward for motif injection + NoPE-lf substitution.
+
+    Phi-2 specifics:
+      - partial_rotary_factor=0.4: only first rot_dim dims of Q/K get RoPE;
+        remaining dims are already NoPE (pass-through), so lf_mask is 0 there.
+      - No GQA (num_key_value_groups=1): repeat_kv is a no-op.
+      - Q/K upcast to float32 for matmul (Phi-2 numerical stability requirement).
+    """
+    import math as _math
+    import transformers.models.phi.modeling_phi as _PHI
+    from transformers.models.phi.modeling_phi import repeat_kv as _phi_repeat_kv
+
+    _MOTIF_STATE["s_tab"]            = s_tab
+    _MOTIF_STATE["v_tab"]            = v_tab
+    _MOTIF_STATE["nl"]               = nl
+    _MOTIF_STATE["nh"]               = nh
+    _MOTIF_STATE["lam"]              = lam
+    _MOTIF_STATE["use_cache_inject"] = False   # Phi always uses no_cache path
+    lf_t = torch.from_numpy(lf_mask_np)
+    _MOTIF_STATE["lf_f"] = lf_t.float()
+    _MOTIF_STATE["hf_f"] = (1.0 - lf_t).float()
+
+    _install_pre_rope_hook_phi(model)
+
+    def patched_phi_forward(self, hidden_states, attention_mask=None, position_ids=None,
+                            past_key_value=None, output_attentions=False, use_cache=False):
+        bsz, q_len, _ = hidden_states.size()
+
+        query_states = self.q_proj(hidden_states)
+        key_states   = self.k_proj(hidden_states)
+        value_states = self.v_proj(hidden_states)
+
+        if self.qk_layernorm:
+            query_states = self.q_layernorm(query_states)
+            key_states   = self.k_layernorm(key_states)
+
+        query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
+        key_states   = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+
+        # use_cache=False throughout: past_key_value is always None
+        kv_seq_len = key_states.shape[-2]
+        cos, sin   = self.rotary_emb(value_states, seq_len=kv_seq_len)
+
+        rot_dim    = self.rotary_emb.dim
+        query_rot  = query_states[..., :rot_dim]
+        query_pass = query_states[..., rot_dim:]
+        key_rot    = key_states[..., :rot_dim]
+        key_pass   = key_states[..., rot_dim:]
+
+        # This call is intercepted by _install_pre_rope_hook_phi, which stores
+        # pre-rotation (q_rot, k_rot) and returns rotated versions.
+        query_rot, key_rot = _PHI.apply_rotary_pos_emb(
+            query_rot, key_rot, cos, sin, position_ids)
+
+        # ── NoPE-lf substitution on low-freq rotary dims ─────────────────────
+        dev  = hidden_states.device
+        st   = _MOTIF_STATE
+        li   = self.layer_idx
+        lf_f = st["lf_f"][:rot_dim].to(dev)   # [rot_dim], 1=low-freq
+        hf_f = st["hf_f"][:rot_dim].to(dev)   # [rot_dim], 1=high-freq
+        if li in _PRE_ROPE_CACHE:
+            q_pre_rot, k_pre_rot = _PRE_ROPE_CACHE[li]   # [B, nh/nkv, T, rot_dim]
+            query_rot = query_rot * hf_f + q_pre_rot * lf_f
+            # Phi-2 has no GQA so repeat_interleave is a no-op (groups=1)
+            k_pre_exp = k_pre_rot.repeat_interleave(self.num_key_value_groups, dim=1)
+            key_rot_full = _phi_repeat_kv(key_rot, self.num_key_value_groups)
+            key_rot   = key_rot_full * hf_f + k_pre_exp * lf_f
+        else:
+            key_rot = _phi_repeat_kv(key_rot, self.num_key_value_groups)
+        # ─────────────────────────────────────────────────────────────────────
+
+        query_states = torch.cat((query_rot,  query_pass), dim=-1)
+        key_states   = torch.cat((key_rot,    _phi_repeat_kv(key_pass, self.num_key_value_groups)), dim=-1)
+        value_states = _phi_repeat_kv(value_states, self.num_key_value_groups)
+
+        k_len = key_states.shape[-2]
+        # Phi-2 upcasts to float32 for numerical stability
+        attn_weights = torch.matmul(query_states.to(torch.float32),
+                                    key_states.to(torch.float32).transpose(2, 3)) / _math.sqrt(self.head_dim)
+
+        # ── motif bias ────────────────────────────────────────────────────────
+        bias = _build_bias_matrix(st["s_tab"], st["v_tab"], st["nl"], st["nh"],
+                                   li, k_len, dev, torch.float32, st["lam"])
+        if q_len < k_len:
+            bias = bias[:, :, k_len - q_len:, :]
+        attn_weights = attn_weights + bias
+        # ─────────────────────────────────────────────────────────────────────
+
+        if attention_mask is not None:
+            attn_weights = attn_weights + attention_mask[:, :, :, :k_len]
+
+        attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32).to(value_states.dtype)
+        attn_weights = F.dropout(attn_weights, p=self.attention_dropout, training=self.training)
+
+        attn_output = torch.matmul(attn_weights, value_states)
+        attn_output = attn_output.transpose(1, 2).contiguous()
+        attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
+        attn_output = self.dense(attn_output)
+
+        if not output_attentions:
+            attn_weights = None
+
+        return attn_output, attn_weights, past_key_value
+
+    _PHI.PhiAttention.forward = patched_phi_forward
+
+
 # ── RULER scoring ─────────────────────────────────────────────────────────────
 def _normalize(s):
     return " ".join(re.sub(r"[%s]" % re.escape(string.punctuation), " ", s.lower()).split())
@@ -235,16 +362,22 @@ def run(a):
     nl  = cfg.num_hidden_layers
     nh  = cfg.num_attention_heads
 
+    is_phi = getattr(cfg, "model_type", "") == "phi"
+
     # load + apply motif (with NoPE-lf substitution for broken OOD low-freq RoPE)
     if a.motif_npz:
         d = np.load(a.motif_npz)
         s_tab, v_tab = d["s"], d["v"]
         lf_mask_np   = d["dmask"].astype(np.float32)   # [head_dim], 1=low-freq
-        patch_llama_attention(model, s_tab, v_tab, nl, nh, lf_mask_np,
-                              lam=a.lam, use_cache_inject=not a.no_cache)
+        if is_phi:
+            patch_phi_attention(model, s_tab, v_tab, nl, nh, lf_mask_np, lam=a.lam)
+        else:
+            patch_llama_attention(model, s_tab, v_tab, nl, nh, lf_mask_np,
+                                  lam=a.lam, use_cache_inject=not a.no_cache)
         if rank == 0:
             n_lf = int(lf_mask_np.sum())
-            print(f"[ruler-eval] motif injected from {a.motif_npz} "
+            arch = "phi" if is_phi else "llama"
+            print(f"[ruler-eval] motif injected ({arch}) from {a.motif_npz} "
                   f"(NoPE-lf on {n_lf}/{len(lf_mask_np)} dims)", flush=True)
 
     # load cases

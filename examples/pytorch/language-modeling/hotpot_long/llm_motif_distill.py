@@ -25,6 +25,7 @@ _CAPTURE = {}   # layer_idx -> {q_pre, q_post, k_pre, k_post}
 _LAYER_CTR = [0]
 
 def _install_rotary_capture():
+    """Hook Llama-style apply_rotary_pos_emb (full head_dim)."""
     orig = _M.apply_rotary_pos_emb
 
     def patched(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
@@ -37,6 +38,23 @@ def _install_rotary_capture():
         return q_r, k_r
 
     _M.apply_rotary_pos_emb = patched
+
+
+def _install_rotary_capture_phi():
+    """Hook Phi-style apply_rotary_pos_emb (partial rot_dim only)."""
+    import transformers.models.phi.modeling_phi as _PHI
+    orig = _PHI.apply_rotary_pos_emb
+
+    def patched(q, k, cos, sin, position_ids, unsqueeze_dim=1):
+        li = _LAYER_CTR[0]
+        _CAPTURE[li] = {"q_pre": q.detach().float(), "k_pre": k.detach().float()}
+        q_r, k_r = orig(q, k, cos, sin, position_ids, unsqueeze_dim)
+        _CAPTURE[li]["q_post"] = q_r.detach().float()
+        _CAPTURE[li]["k_post"] = k_r.detach().float()
+        _LAYER_CTR[0] += 1
+        return q_r, k_r
+
+    _PHI.apply_rotary_pos_emb = patched
 
 
 def _reset_capture():
@@ -97,15 +115,20 @@ def run(a):
     nl  = cfg.num_hidden_layers
     nh  = cfg.num_attention_heads
     nkv = cfg.num_key_value_heads
-    g   = nh // nkv          # KV groups (8 for TinyLlama)
+    g   = nh // nkv          # KV groups (8 for TinyLlama, 1 for Phi-2)
     hd  = cfg.hidden_size // nh
     T   = a.L
     scale = 1.0 / np.sqrt(hd)
 
+    is_phi = getattr(cfg, "model_type", "") == "phi"
+
     dmask_np = lowfreq_dim_mask(model, hd, a.period_cutoff)
     dm = torch.tensor(dmask_np, device=dev).view(1, 1, hd)   # [1,1,hd]
 
-    _install_rotary_capture()
+    if is_phi:
+        _install_rotary_capture_phi()
+    else:
+        _install_rotary_capture()
 
     # load cases
     cases = []
@@ -134,16 +157,19 @@ def run(a):
 
         for li in range(nl):
             cap = _CAPTURE[li]
-            q_pre  = cap["q_pre"][0]      # [nh, T, hd]
+            q_pre  = cap["q_pre"][0]   # [nh,  T, rot_dim]  (rot_dim==hd for Llama; <hd for Phi)
             q_post = cap["q_post"][0]
-            k_pre  = cap["k_pre"][0]      # [nkv, T, hd]
+            k_pre  = cap["k_pre"][0]   # [nkv, T, rot_dim]
             k_post = cap["k_post"][0]
 
-            # repeat KV to match Q heads
-            k_pre  = k_pre.repeat_interleave(g, dim=0)    # [nh, T, hd]
+            # repeat KV to match Q heads (no-op for Phi-2 which has no GQA)
+            k_pre  = k_pre.repeat_interleave(g, dim=0)
             k_post = k_post.repeat_interleave(g, dim=0)
 
-            dm_dev = dm.squeeze().to(q_post.device)
+            # dm_dev sliced to match the actual rotated dim (Phi-2: rot_dim=32, hd=80)
+            rot_dim = q_pre.shape[-1]
+            dm_dev  = dm.squeeze()[:rot_dim].to(q_post.device)   # [rot_dim]
+
             qp = (q_post * dm_dev); kp = (k_post * dm_dev)   # low-freq post-RoPE
             qn = (q_pre  * dm_dev); kn = (k_pre  * dm_dev)   # low-freq pre-RoPE (NoPE)
 
