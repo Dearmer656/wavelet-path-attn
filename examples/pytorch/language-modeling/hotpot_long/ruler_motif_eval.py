@@ -27,7 +27,7 @@ import torch.nn.functional as F
 import torch.distributed as dist
 import transformers.models.llama.modeling_llama as _M
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
-from transformers.models.llama.modeling_llama import apply_rotary_pos_emb, repeat_kv
+from transformers.models.llama.modeling_llama import repeat_kv
 
 
 # ── bias helpers (reuse PAT-217 logic) ───────────────────────────────────────
@@ -76,79 +76,63 @@ def _build_bias_row(s_tab, v_tab, nl, nh, layer_idx, pos, k_len, device, dtype, 
 
 
 # ── Llama attention patching ──────────────────────────────────────────────────
+_MOTIF_STATE = {}   # populated by patch_llama_attention; read inside patched eager_attn
+
+
 def patch_llama_attention(model, s_tab, v_tab, nl, nh, lam=1.0, use_cache_inject=False):
-    """Replace each LlamaAttention.forward to inject motif bias after QK matmul.
+    """Patch eager_attention_forward in the Llama modeling module to inject motif bias.
 
-    use_cache_inject=False: use_cache=False path (q_len==k_len at every step).
-    use_cache_inject=True:  KV-cache decode (q_len==1 after prefill) — uses bias_row.
+    Works with both old-style (rotary on attn) and new-style (rotary at model level)
+    Llama implementations — injection is at the standalone eager_attention_forward fn.
     """
-    for layer_idx, layer in enumerate(model.model.layers):
-        attn = layer.self_attn
-        _make_patched(attn, layer_idx, s_tab, v_tab, nl, nh, lam, use_cache_inject)
+    _MOTIF_STATE["s_tab"] = s_tab
+    _MOTIF_STATE["v_tab"] = v_tab
+    _MOTIF_STATE["nl"]    = nl
+    _MOTIF_STATE["nh"]    = nh
+    _MOTIF_STATE["lam"]   = lam
+    _MOTIF_STATE["use_cache_inject"] = use_cache_inject
 
+    import transformers.models.llama.modeling_llama as _LM
+    _orig = _LM.eager_attention_forward
 
-def _make_patched(attn, layer_idx, s_tab, v_tab, nl, nh, lam, use_cache_inject):
-    # Keep reference to current attn module (closure)
-    def patched_forward(
-        hidden_states, attention_mask=None, position_ids=None,
-        past_key_value=None, output_attentions=False, use_cache=False,
-        cache_position=None, **kwargs
-    ):
-        bsz, q_len, _ = hidden_states.size()
+    def patched_eager(module, query, key, value, attention_mask,
+                      scaling, dropout=0.0, **kwargs):
+        st    = _MOTIF_STATE
+        nh_   = st["nh"]; nl_ = st["nl"]
+        s_    = st["s_tab"]; v_ = st["v_tab"]; lam_ = st["lam"]
 
-        query_states = attn.q_proj(hidden_states)
-        key_states   = attn.k_proj(hidden_states)
-        value_states = attn.v_proj(hidden_states)
+        key_states   = repeat_kv(key,   module.num_key_value_groups)
+        value_states = repeat_kv(value, module.num_key_value_groups)
 
-        query_states = query_states.view(bsz, q_len, attn.num_heads, attn.head_dim).transpose(1, 2)
-        key_states   = key_states.view(bsz, q_len, attn.num_key_value_heads, attn.head_dim).transpose(1, 2)
-        value_states = value_states.view(bsz, q_len, attn.num_key_value_heads, attn.head_dim).transpose(1, 2)
-
-        past_kv = getattr(attn, "past_key_value", past_key_value)
-        cos, sin = attn.rotary_emb(value_states, position_ids)
-        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
-
-        if past_kv is not None:
-            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
-            key_states, value_states = past_kv.update(key_states, value_states, attn.layer_idx, cache_kwargs)
-
-        key_states   = repeat_kv(key_states,   attn.num_key_value_groups)
-        value_states = repeat_kv(value_states, attn.num_key_value_groups)
-
-        attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(attn.head_dim)
+        attn_weights = torch.matmul(query, key_states.transpose(2, 3)) * scaling
 
         # ── motif injection ──────────────────────────────────────────────────
-        k_len_cur = key_states.shape[-2]
-        dev, dt   = query_states.device, query_states.dtype
-        if use_cache_inject and q_len == 1 and k_len_cur > 1:
-            # decode step: compute single-row bias (O(k_len))
-            pos  = k_len_cur - 1
-            bias = _build_bias_row(s_tab, v_tab, nl, nh, layer_idx, pos, k_len_cur, dev, dt, lam)
+        li    = module.layer_idx
+        q_len = query.shape[-2]
+        k_len = key_states.shape[-2]
+        dev, dt = query.device, query.dtype
+
+        if st["use_cache_inject"] and q_len == 1 and k_len > 1:
+            pos  = k_len - 1
+            bias = _build_bias_row(s_, v_, nl_, nh_, li, pos, k_len, dev, dt, lam_)
         else:
-            # prefill (or use_cache=False every step): full T×T bias
-            bias = _build_bias_matrix(s_tab, v_tab, nl, nh, layer_idx, k_len_cur, dev, dt, lam)
-            if q_len < k_len_cur:
-                # slice to [1, nh, q_len, k_len] when q < k (e.g., with KV cache prefill)
-                bias = bias[:, :, k_len_cur - q_len:, :]
+            bias = _build_bias_matrix(s_, v_, nl_, nh_, li, k_len, dev, dt, lam_)
+            if q_len < k_len:
+                bias = bias[:, :, k_len - q_len:, :]
         attn_weights = attn_weights + bias
         # ────────────────────────────────────────────────────────────────────
 
         if attention_mask is not None:
-            causal_mask = attention_mask
-            if cache_position is not None:
-                causal_mask = attention_mask[:, :, cache_position, :key_states.shape[-2]]
+            causal_mask = attention_mask[:, :, :, :key_states.shape[-2]]
             attn_weights = attn_weights + causal_mask
 
-        attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
-        attn_weights = F.dropout(attn_weights, p=attn.attention_dropout, training=attn.training)
+        attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query.dtype)
+        attn_weights = F.dropout(attn_weights, p=dropout, training=module.training)
         attn_output  = torch.matmul(attn_weights, value_states)
+        attn_output  = attn_output.transpose(1, 2).contiguous()
+        return attn_output, attn_weights
 
-        attn_output = attn_output.transpose(1, 2).contiguous().reshape(bsz, q_len, attn.hidden_size)
-        attn_output = attn.o_proj(attn_output)
-
-        return attn_output, None if not output_attentions else attn_weights, past_key_value
-
-    attn.forward = patched_forward
+    _LM.eager_attention_forward = patched_eager
 
 
 # ── RULER scoring ─────────────────────────────────────────────────────────────

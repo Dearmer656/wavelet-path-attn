@@ -46,9 +46,10 @@ def _reset_capture():
 # ── low-freq dim mask (same logic as PAT-208/217) ────────────────────────────
 def lowfreq_dim_mask(model, head_dim, period_cutoff):
     """Return float32 mask [head_dim]: 1 on dims whose RoPE period > cutoff."""
-    # Grab base frequencies from the first layer's rotary_emb
-    re = model.model.layers[0].self_attn.rotary_emb
-    # Compute inv_freq (theta_m = base^(-2m/d))
+    # rotary_emb is at model.model.rotary_emb (shared, new-style Llama) or per-layer attn
+    re = getattr(model.model, "rotary_emb", None)
+    if re is None:
+        re = model.model.layers[0].self_attn.rotary_emb
     inv_freq = re.inv_freq.detach().float().cpu().numpy()   # [head_dim//2]
     periods = 2.0 * np.pi / np.clip(inv_freq, 1e-12, None)
     mask = np.zeros(head_dim, np.float32)
