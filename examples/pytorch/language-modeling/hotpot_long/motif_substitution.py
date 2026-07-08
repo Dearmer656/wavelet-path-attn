@@ -104,6 +104,22 @@ def _build_layer_bias(s_lay, v_lay, hmask, lam_lay, L0, T, device, dtype, tail):
     return torch.from_numpy(B).unsqueeze(0).to(device=device, dtype=dtype)
 
 
+def _build_layer_bias_row(s_lay, v_lay, hmask, lam_lay, L0, pos, k_len, device, dtype, tail):
+    """[1, nh, 1, k_len] bias for a single query at absolute position `pos`.
+    O(k_len) instead of O(k_len²) — used for KV-cache decode steps."""
+    nh = s_lay.shape[0]
+    j = np.arange(k_len)
+    deltas = np.clip(pos - j, 0, k_len - 1)
+    B = np.zeros((nh, 1, k_len), dtype=np.float32)
+    for h in range(nh):
+        if hmask[h] <= 0 or lam_lay[h] == 0:
+            continue
+        s = _extend_s(s_lay[h], L0, k_len, tail)
+        v = _extend_v(v_lay[h], L0, k_len)
+        B[h, 0] = lam_lay[h] * (s[deltas] + v[j])
+    return torch.from_numpy(B).unsqueeze(0).to(device=device, dtype=dtype)
+
+
 def _install_eager_patch(tail):
     global _PATCHED
     if _PATCHED:
@@ -134,8 +150,9 @@ def _install_eager_patch(tail):
                         cache[q_len] = b; module._motif_bias_cache = cache
                 kwargs["qwab_bias"] = b
             elif q_len == 1 and k_len > 1:               # KV-cache decode: last-row bias only
-                full = _build_layer_bias(s_lay, v_lay, hmask, lam, L0, k_len, dev, dt, tail)
-                kwargs["qwab_bias"] = full[:, :, k_len - 1:k_len, :]
+                pos = k_len - 1
+                kwargs["qwab_bias"] = _build_layer_bias_row(
+                    s_lay, v_lay, hmask, lam, L0, pos, k_len, dev, dt, tail)
         return _orig(module, query, key, value, attention_mask, head_mask, **kwargs)
 
     M.eager_attention_forward = patched
