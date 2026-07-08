@@ -87,6 +87,10 @@ _MOTIF_STATE = {}   # populated by patch_llama_attention; read inside patched ea
 _PRE_ROPE_CACHE = {}   # layer_idx -> (q_pre, k_pre)
 _PRE_LAYER_CTR  = [0]
 
+# Bias cache: avoids rebuilding [nh,T,T] matrix every decode step.
+# Key: layer_idx → (T, bias_tensor [1,nh,T,T]).  Reset per case.
+_BIAS_CACHE = {}
+
 
 def _install_pre_rope_hook(model):
     """Capture pre-rotation Q/K per layer so we can zero out low-freq RoPE in patched_eager."""
@@ -292,6 +296,10 @@ def run(a):
         if rank == 0 and (ci + 1) % 20 == 0:
             acc = np.mean([r["score"] for r in records])
             print(f"[ruler-eval] {ci+1}/{len(my_cases)}  acc={acc:.4f}", flush=True)
+
+    # Release cached GPU memory so NCCL can allocate communication buffers
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     if world > 1:
         gathered = [None] * world
