@@ -89,7 +89,7 @@ def run(a):
         tok.pad_token = tok.eos_token
 
     cfg = AutoConfig.from_pretrained(a.model, cache_dir=a.cache_dir)
-    cfg.attn_implementation = "eager"
+    cfg._attn_implementation = "eager"
     model = AutoModelForCausalLM.from_pretrained(
         a.model, config=cfg, torch_dtype=torch.float32, cache_dir=a.cache_dir,
         trust_remote_code=True).eval().to(dev)
@@ -143,9 +143,9 @@ def run(a):
             k_pre  = k_pre.repeat_interleave(g, dim=0)    # [nh, T, hd]
             k_post = k_post.repeat_interleave(g, dim=0)
 
-            dm_cpu = dm.squeeze().cpu()
-            qp = (q_post * dm_cpu); kp = (k_post * dm_cpu)   # low-freq post-RoPE
-            qn = (q_pre  * dm_cpu); kn = (k_pre  * dm_cpu)   # low-freq pre-RoPE (NoPE)
+            dm_dev = dm.squeeze().to(q_post.device)
+            qp = (q_post * dm_dev); kp = (k_post * dm_dev)   # low-freq post-RoPE
+            qn = (q_pre  * dm_dev); kn = (k_pre  * dm_dev)   # low-freq pre-RoPE (NoPE)
 
             B_rope = torch.einsum("htd,hsd->hts", qp, kp).numpy() * scale
             B_nope = torch.einsum("htd,hsd->hts", qn, kn).numpy() * scale

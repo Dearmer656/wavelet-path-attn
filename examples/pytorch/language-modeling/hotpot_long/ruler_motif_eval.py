@@ -168,7 +168,7 @@ def run(a):
         tok.pad_token = tok.eos_token
 
     cfg = AutoConfig.from_pretrained(a.model, cache_dir=a.cache_dir)
-    cfg.attn_implementation = "eager" if a.motif_npz else cfg.attn_implementation
+    cfg._attn_implementation = "eager"   # always eager so patch takes effect
     model = AutoModelForCausalLM.from_pretrained(
         a.model, config=cfg, torch_dtype=torch.float32,
         cache_dir=a.cache_dir, trust_remote_code=True).eval().to(device)
@@ -178,7 +178,6 @@ def run(a):
 
     # load + apply motif
     if a.motif_npz:
-        cfg.attn_implementation = "eager"
         d = np.load(a.motif_npz)
         s_tab, v_tab = d["s"], d["v"]
         patch_llama_attention(model, s_tab, v_tab, nl, nh, lam=a.lam,
