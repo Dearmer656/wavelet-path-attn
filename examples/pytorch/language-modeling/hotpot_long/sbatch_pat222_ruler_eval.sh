@@ -11,7 +11,7 @@
 # Run baseline first (no MOTIF_NPZ), then motif (set MOTIF_NPZ).
 MODEL="${MODEL:-TinyLlama/TinyLlama-1.1B-Chat-v1.0}"
 MOTIF_NPZ="${MOTIF_NPZ:-}"
-LENGTHS="${LENGTHS:-512 2048 4096}"
+LENGTHS="${LENGTHS:-2048 4096}"
 NPROC="${NPROC:-4}"
 NO_CACHE="${NO_CACHE:-1}"   # use_cache=False by default (PAT-222 spec)
 LAM="${LAM:-1.0}"
