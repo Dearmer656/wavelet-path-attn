@@ -120,7 +120,9 @@ def patch_llama_attention(model, s_tab, v_tab, nl, nh, lf_mask_np,
     _MOTIF_STATE["nh"]               = nh
     _MOTIF_STATE["lam"]              = lam
     _MOTIF_STATE["use_cache_inject"] = use_cache_inject
-    _MOTIF_STATE["lf_mask"]          = torch.from_numpy(lf_mask_np).bool()  # [head_dim]
+    lf_t = torch.from_numpy(lf_mask_np)
+    _MOTIF_STATE["lf_f"]  = lf_t.float()          # [head_dim] float  1=low-freq
+    _MOTIF_STATE["hf_f"]  = (1.0 - lf_t).float()  # [head_dim] float  1=high-freq
 
     _install_pre_rope_hook(model)
 
@@ -132,22 +134,22 @@ def patch_llama_attention(model, s_tab, v_tab, nl, nh, lf_mask_np,
         st    = _MOTIF_STATE
         nh_   = st["nh"]; nl_ = st["nl"]
         s_    = st["s_tab"]; v_ = st["v_tab"]; lam_ = st["lam"]
-        lf    = st["lf_mask"].to(query.device)   # [head_dim] bool
+        dev   = query.device
+        lf_f  = st["lf_f"].to(dev)   # [head_dim] float, 1=low-freq NoPE
+        hf_f  = st["hf_f"].to(dev)   # [head_dim] float, 1=high-freq RoPE
 
         li    = module.layer_idx
         value_states = repeat_kv(value, module.num_key_value_groups)
 
         # ── NoPE substitution on low-freq dims ───────────────────────────────
-        # Replace the broken OOD low-freq RoPE rotation with pre-rotation values.
+        # For OOD lengths, low-freq RoPE phases are broken. Replace with pre-rotation
+        # values via mask multiply (avoids slow CUDA boolean scatter/gather).
+        # q_use = query * hf_mask + q_pre * lf_mask  (element-wise, coalesced)
         if li in _PRE_ROPE_CACHE:
             q_pre, k_pre = _PRE_ROPE_CACHE[li]
-            # q_pre: [B, nh, T, hd]  k_pre: [B, nkv, T, hd]
-            q_use = query.clone()
-            q_use[..., lf] = q_pre[..., lf]
-
-            k_pre_exp = k_pre.repeat_interleave(module.num_key_value_groups, dim=1)
-            k_use = repeat_kv(key, module.num_key_value_groups).clone()
-            k_use[..., lf] = k_pre_exp[..., lf]
+            q_use     = query * hf_f + q_pre * lf_f                                   # [B,nh,T,hd]
+            k_pre_exp = k_pre.repeat_interleave(module.num_key_value_groups, dim=1)    # [B,nh,T,hd]
+            k_use     = repeat_kv(key, module.num_key_value_groups) * hf_f + k_pre_exp * lf_f
         else:
             q_use = query
             k_use = repeat_kv(key, module.num_key_value_groups)
