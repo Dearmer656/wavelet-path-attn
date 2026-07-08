@@ -78,19 +78,51 @@ def _build_bias_row(s_tab, v_tab, nl, nh, layer_idx, pos, k_len, device, dtype, 
 # ── Llama attention patching ──────────────────────────────────────────────────
 _MOTIF_STATE = {}   # populated by patch_llama_attention; read inside patched eager_attn
 
+# Side-channel for pre-RoPE Q/K capture (used to remove broken low-freq rotation)
+_PRE_ROPE_CACHE = {}   # layer_idx -> (q_pre, k_pre)
+_PRE_LAYER_CTR  = [0]
 
-def patch_llama_attention(model, s_tab, v_tab, nl, nh, lam=1.0, use_cache_inject=False):
-    """Patch eager_attention_forward in the Llama modeling module to inject motif bias.
 
-    Works with both old-style (rotary on attn) and new-style (rotary at model level)
-    Llama implementations — injection is at the standalone eager_attention_forward fn.
+def _install_pre_rope_hook(model):
+    """Capture pre-rotation Q/K per layer so we can zero out low-freq RoPE in patched_eager."""
+    import transformers.models.llama.modeling_llama as _LM
+
+    # Reset counter at each model.forward() call (each decode step with use_cache=False)
+    def _reset_hook(module, inp):
+        _PRE_LAYER_CTR[0] = 0
+        _PRE_ROPE_CACHE.clear()
+    model.model.register_forward_pre_hook(_reset_hook)
+
+    orig_rotary = _LM.apply_rotary_pos_emb
+    def _capture_rotary(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
+        li = _PRE_LAYER_CTR[0]
+        _PRE_ROPE_CACHE[li] = (q, k)   # GPU tensors, not copied
+        q_r, k_r = orig_rotary(q, k, cos, sin, position_ids, unsqueeze_dim)
+        _PRE_LAYER_CTR[0] += 1
+        return q_r, k_r
+    _LM.apply_rotary_pos_emb = _capture_rotary
+
+
+def patch_llama_attention(model, s_tab, v_tab, nl, nh, lf_mask_np,
+                          lam=1.0, use_cache_inject=False):
+    """Patch eager_attention_forward to inject motif with NoPE-lf substitution.
+
+    For low-freq RoPE dims (period > period_cutoff), we replace post-RoPE Q/K with their
+    pre-rotation counterparts — removing the broken OOD low-freq rotation.  The motif bias
+    (distilled from B_rope_lf - B_nope_lf at training length) is then added on top, giving:
+        attn_logits = B_rope_hf  +  B_nope_lf  +  motif
+    instead of the flawed:
+        attn_logits = B_rope_hf  +  B_rope_lf_ood(broken)  +  motif
     """
-    _MOTIF_STATE["s_tab"] = s_tab
-    _MOTIF_STATE["v_tab"] = v_tab
-    _MOTIF_STATE["nl"]    = nl
-    _MOTIF_STATE["nh"]    = nh
-    _MOTIF_STATE["lam"]   = lam
+    _MOTIF_STATE["s_tab"]            = s_tab
+    _MOTIF_STATE["v_tab"]            = v_tab
+    _MOTIF_STATE["nl"]               = nl
+    _MOTIF_STATE["nh"]               = nh
+    _MOTIF_STATE["lam"]              = lam
     _MOTIF_STATE["use_cache_inject"] = use_cache_inject
+    _MOTIF_STATE["lf_mask"]          = torch.from_numpy(lf_mask_np).bool()  # [head_dim]
+
+    _install_pre_rope_hook(model)
 
     import transformers.models.llama.modeling_llama as _LM
     _orig = _LM.eager_attention_forward
@@ -100,18 +132,34 @@ def patch_llama_attention(model, s_tab, v_tab, nl, nh, lam=1.0, use_cache_inject
         st    = _MOTIF_STATE
         nh_   = st["nh"]; nl_ = st["nl"]
         s_    = st["s_tab"]; v_ = st["v_tab"]; lam_ = st["lam"]
+        lf    = st["lf_mask"].to(query.device)   # [head_dim] bool
 
-        key_states   = repeat_kv(key,   module.num_key_value_groups)
+        li    = module.layer_idx
         value_states = repeat_kv(value, module.num_key_value_groups)
 
-        attn_weights = torch.matmul(query, key_states.transpose(2, 3)) * scaling
+        # ── NoPE substitution on low-freq dims ───────────────────────────────
+        # Replace the broken OOD low-freq RoPE rotation with pre-rotation values.
+        if li in _PRE_ROPE_CACHE:
+            q_pre, k_pre = _PRE_ROPE_CACHE[li]
+            # q_pre: [B, nh, T, hd]  k_pre: [B, nkv, T, hd]
+            q_use = query.clone()
+            q_use[..., lf] = q_pre[..., lf]
 
-        # ── motif injection ──────────────────────────────────────────────────
-        li    = module.layer_idx
-        q_len = query.shape[-2]
-        k_len = key_states.shape[-2]
+            k_pre_exp = k_pre.repeat_interleave(module.num_key_value_groups, dim=1)
+            k_use = repeat_kv(key, module.num_key_value_groups).clone()
+            k_use[..., lf] = k_pre_exp[..., lf]
+        else:
+            q_use = query
+            k_use = repeat_kv(key, module.num_key_value_groups)
+        # ────────────────────────────────────────────────────────────────────
+
+        q_len = q_use.shape[-2]
+        k_len = k_use.shape[-2]
         dev, dt = query.device, query.dtype
 
+        attn_weights = torch.matmul(q_use, k_use.transpose(2, 3)) * scaling
+
+        # ── motif injection ──────────────────────────────────────────────────
         if st["use_cache_inject"] and q_len == 1 and k_len > 1:
             pos  = k_len - 1
             bias = _build_bias_row(s_, v_, nl_, nh_, li, pos, k_len, dev, dt, lam_)
@@ -123,7 +171,7 @@ def patch_llama_attention(model, s_tab, v_tab, nl, nh, lam=1.0, use_cache_inject
         # ────────────────────────────────────────────────────────────────────
 
         if attention_mask is not None:
-            causal_mask = attention_mask[:, :, :, :key_states.shape[-2]]
+            causal_mask = attention_mask[:, :, :, :k_use.shape[-2]]
             attn_weights = attn_weights + causal_mask
 
         attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query.dtype)
@@ -176,14 +224,17 @@ def run(a):
     nl  = cfg.num_hidden_layers
     nh  = cfg.num_attention_heads
 
-    # load + apply motif
+    # load + apply motif (with NoPE-lf substitution for broken OOD low-freq RoPE)
     if a.motif_npz:
         d = np.load(a.motif_npz)
         s_tab, v_tab = d["s"], d["v"]
-        patch_llama_attention(model, s_tab, v_tab, nl, nh, lam=a.lam,
-                              use_cache_inject=not a.no_cache)
+        lf_mask_np   = d["dmask"].astype(np.float32)   # [head_dim], 1=low-freq
+        patch_llama_attention(model, s_tab, v_tab, nl, nh, lf_mask_np,
+                              lam=a.lam, use_cache_inject=not a.no_cache)
         if rank == 0:
-            print(f"[ruler-eval] motif injected from {a.motif_npz}", flush=True)
+            n_lf = int(lf_mask_np.sum())
+            print(f"[ruler-eval] motif injected from {a.motif_npz} "
+                  f"(NoPE-lf on {n_lf}/{len(lf_mask_np)} dims)", flush=True)
 
     # load cases
     cases = []
