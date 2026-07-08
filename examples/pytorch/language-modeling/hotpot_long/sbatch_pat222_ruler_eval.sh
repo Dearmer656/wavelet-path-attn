@@ -15,6 +15,7 @@ LENGTHS="${LENGTHS:-512 2048 4096}"
 NPROC="${NPROC:-4}"
 NO_CACHE="${NO_CACHE:-1}"   # use_cache=False by default (PAT-222 spec)
 LAM="${LAM:-1.0}"
+N_CASES="${N_CASES:-0}"    # 0=all; set to e.g. 50 for a quick smoke test
 
 _slack() {
     python3 /project/nlp-work5/hongyu-s/gate1/scripts/notify_slack.py \
@@ -56,13 +57,16 @@ for L in ${LENGTHS}; do
     MOTIF_ARG=""
     [ -n "${MOTIF_NPZ}" ] && MOTIF_ARG="--motif_npz ${MOTIF_NPZ}"
 
+    N_CASES_FLAG=""
+    [ "${N_CASES}" != "0" ] && N_CASES_FLAG="--n_cases ${N_CASES}"
+
     python -m torch.distributed.run --nproc_per_node=${NPROC} --master_port=${MP} \
         ruler_motif_eval.py \
         --model "${MODEL}" \
         --jsonl "${JSONL}" \
         --L "${L}" \
         --lam "${LAM}" \
-        ${MOTIF_ARG} ${NO_CACHE_FLAG} \
+        ${MOTIF_ARG} ${NO_CACHE_FLAG} ${N_CASES_FLAG} \
         --out "${OUT}"
     echo "--- done L=${L} ---"
 done
