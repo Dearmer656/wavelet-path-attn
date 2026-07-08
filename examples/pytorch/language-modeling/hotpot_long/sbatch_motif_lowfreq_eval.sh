@@ -52,7 +52,7 @@ for L in ${LENGTHS}; do
   mkdir -p "${OUT}"
   echo "=== ${MODELNAME} L${L} ==="
   MP=$(( 19000 + SLURM_JOB_ID % 4000 + L % 100 ))
-  python -m torch.distributed.run --nproc_per_node=1 --master_port=${MP} hotpot_long/motif_launcher.py \
+  python -m torch.distributed.run --nproc_per_node=${NPROC:-1} --master_port=${MP} hotpot_long/motif_launcher.py \
     --model_type gpt2 --tokenizer_name gpt2 --model_name_or_path "${CKPT}" \
     --attn_implementation eager --pe_method rotary \
     --dataset_name hotpot_qa --dataset_config_name distractor \
