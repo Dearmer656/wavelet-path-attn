@@ -199,9 +199,6 @@ def run(a):
     if rank == 0:
         print(f"[ruler-eval] {len(cases)} cases at L={a.L}", flush=True)
 
-    # prompt budget (leave room for generated answer)
-    prompt_cap = a.L - a.max_new_tokens
-
     gen_kwargs = dict(
         max_new_tokens=a.max_new_tokens,
         do_sample=False, num_beams=1,
@@ -218,16 +215,11 @@ def run(a):
         gold_list = ex["outputs"]       # list of acceptable answers
         task      = ex.get("ruler_config", "unknown")
 
-        # apply chat template if available
-        if hasattr(tok, "apply_chat_template") and tok.chat_template:
-            msgs = [{"role": "user", "content": raw_input}]
-            prompt = tok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
-        else:
-            prompt = raw_input
-
-        ids = tok(prompt, add_special_tokens=False, truncation=False)["input_ids"]
-        if len(ids) > prompt_cap:
-            ids = ids[-prompt_cap:]     # keep tail (question is at the end)
+        # No chat template: RULER input is self-contained; chat template adds overhead
+        # that forces truncation and removes needle records placed at the start.
+        # No left-truncation: pass the full prompt so the model sees all records.
+        # Positions beyond training length will be OOD — that is what we are testing.
+        ids = tok(raw_input, add_special_tokens=True, truncation=False)["input_ids"]
 
         input_t = torch.tensor([ids], dtype=torch.long, device=device)
         with torch.no_grad():

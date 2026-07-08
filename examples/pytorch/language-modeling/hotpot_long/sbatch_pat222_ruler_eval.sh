@@ -11,7 +11,7 @@
 # Run baseline first (no MOTIF_NPZ), then motif (set MOTIF_NPZ).
 MODEL="${MODEL:-TinyLlama/TinyLlama-1.1B-Chat-v1.0}"
 MOTIF_NPZ="${MOTIF_NPZ:-}"
-LENGTHS="${LENGTHS:-2048 4096}"
+LENGTHS="${LENGTHS:-512 2048 4096}"
 NPROC="${NPROC:-4}"
 NO_CACHE="${NO_CACHE:-1}"   # use_cache=False by default (PAT-222 spec)
 LAM="${LAM:-1.0}"
@@ -44,7 +44,12 @@ NO_CACHE_FLAG=""
 [ "${NO_CACHE}" = "1" ] && NO_CACHE_FLAG="--no_cache"
 
 for L in ${LENGTHS}; do
-    JSONL=${BASE}/hotpot_long/data/ruler_eval_${L}.jsonl
+    # L=512 uses ruler_train_512.jsonl (in-distribution sanity check)
+    if [ "${L}" = "512" ]; then
+        JSONL=${BASE}/hotpot_long/data/ruler_train_${L}.jsonl
+    else
+        JSONL=${BASE}/hotpot_long/data/ruler_eval_${L}.jsonl
+    fi
     echo "=== L=${L} ==="
     MP=$(( 21000 + SLURM_JOB_ID % 3000 + L % 100 ))
 
