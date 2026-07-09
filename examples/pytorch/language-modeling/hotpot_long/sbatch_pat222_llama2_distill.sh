@@ -8,7 +8,7 @@
 #SBATCH --time=100:00:00
 
 # PAT-222: Distill slash+sink motif from LLaMA-2-7B-Chat at L=4096 (training length).
-MODEL="${MODEL:-meta-llama/Llama-2-7b-chat-hf}"
+MODEL="${MODEL:-NousResearch/Llama-2-7b-chat-hf}"
 L="${L:-4096}"
 N_CASES="${N_CASES:-20}"
 
