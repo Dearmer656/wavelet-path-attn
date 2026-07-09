@@ -108,8 +108,9 @@ def run(a):
 
     cfg = AutoConfig.from_pretrained(a.model, cache_dir=a.cache_dir)
     cfg._attn_implementation = "eager"
+    dtype = getattr(torch, a.dtype)
     model = AutoModelForCausalLM.from_pretrained(
-        a.model, config=cfg, torch_dtype=torch.float32, cache_dir=a.cache_dir,
+        a.model, config=cfg, torch_dtype=dtype, cache_dir=a.cache_dir,
         trust_remote_code=True).eval().to(dev)
 
     nl  = cfg.num_hidden_layers
@@ -220,6 +221,7 @@ if __name__ == "__main__":
     ap.add_argument("--L",             type=int, default=2048)
     ap.add_argument("--n_cases",       type=int, default=20)
     ap.add_argument("--period_cutoff", type=float, default=2048.0)
+    ap.add_argument("--dtype",         default="float32", help="torch dtype: float32 / bfloat16 / float16")
     ap.add_argument("--out",           default="analysis_outputs/pat222/tinyllama")
     ap.add_argument("--cache_dir",     default="/cl/work5/hongyu-s/huggingfac")
     run(ap.parse_args())

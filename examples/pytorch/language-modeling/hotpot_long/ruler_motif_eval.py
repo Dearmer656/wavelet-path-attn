@@ -328,8 +328,9 @@ def run(a):
 
     cfg = AutoConfig.from_pretrained(a.model, cache_dir=a.cache_dir)
     cfg._attn_implementation = "eager"   # always eager so patch takes effect
+    dtype = getattr(torch, a.dtype)
     model = AutoModelForCausalLM.from_pretrained(
-        a.model, config=cfg, torch_dtype=torch.float32,
+        a.model, config=cfg, torch_dtype=dtype,
         cache_dir=a.cache_dir, trust_remote_code=True).eval().to(device)
 
     nl  = cfg.num_hidden_layers
@@ -446,6 +447,7 @@ if __name__ == "__main__":
     ap.add_argument("--motif_npz",     default="", help="path to llm_motif_L*.npz; empty=baseline")
     ap.add_argument("--lam",           type=float, default=1.0)
     ap.add_argument("--no_cache",      action="store_true", help="use_cache=False for generation")
+    ap.add_argument("--dtype",         default="float32", help="torch dtype: float32 / bfloat16 / float16")
     ap.add_argument("--out",           default="analysis_outputs/pat222/ruler")
     ap.add_argument("--cache_dir",     default="/cl/work5/hongyu-s/huggingfac")
     run(ap.parse_args())
