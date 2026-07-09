@@ -53,11 +53,27 @@ def split_prompt(prompt: str) -> Tuple[str, str]:
     return prompt[:idx], prompt[idx:]
 
 
+# RULER-style neutral filler sentences (no overlap with task vocabulary).
+# Reference: github.com/NVIDIA/RULER — "The grass is green..." repeated pattern.
+_FILLER_SENTENCES = [
+    "The grass is green.",
+    "The sky is blue.",
+    "The sun is yellow.",
+    "Here we go.",
+    "There and back again.",
+    "The wind is calm.",
+    "The river flows.",
+    "The stars are bright.",
+    "The moon is full.",
+    "The road is long.",
+]
+
+
 def make_noise_line(rng: random.Random, j: int) -> str:
-    a = rng.choice(["amber", "violet", "silver", "teal", "indigo", "navy", "ivory", "bronze"])
-    b = rng.choice(["falcon", "otter", "lynx", "maple", "cedar", "quartz", "delta", "omega"])
-    c = rng.choice(["alpha", "beta", "gamma", "kappa", "theta", "sigma", "lambda", "zeta"])
-    return rf"\nNoise {j}: tag={a}_{j}; item={b}; flag={c}; code={rng.randint(10,999)}."
+    # Pick 2-3 neutral sentences; no task-relevant keywords (no tag/flag/code/key/value).
+    n = rng.randint(2, 3)
+    chosen = [rng.choice(_FILLER_SENTENCES) for _ in range(n)]
+    return r"\n" + " ".join(chosen)
 
 
 def stretch_prompt(
@@ -76,7 +92,7 @@ def stretch_prompt(
     if cur_len >= target_tokens:
         return cur
 
-    # Grow with medium-size noise lines.
+    # Grow with medium-size neutral filler lines.
     while cur_len < target_tokens:
         cand_lines = lines + [make_noise_line(rng, j)]
         cand = prefix + "".join(cand_lines) + qtail
@@ -90,11 +106,11 @@ def stretch_prompt(
             break
 
     # Fine-grained padding — insert BEFORE qtail so question stays at end.
-    pad_words = ["note", "entry", "token", "field", "record", "index", "cache", "value"]
+    fine_sents = ["The path is clear.", "The lake is still.", "The hill is steep.", "The field is wide."]
     inner = prefix + "".join(lines)   # everything before qtail
     while cur_len < target_tokens:
-        w = rng.choice(pad_words)
-        cand_inner = inner + rf"\nPad {w}."
+        w = rng.choice(fine_sents)
+        cand_inner = inner + r"\n" + w
         cand = cand_inner + qtail
         cand_len = count_tokens(tok, cand)
         if cand_len <= target_tokens + max_overflow:
