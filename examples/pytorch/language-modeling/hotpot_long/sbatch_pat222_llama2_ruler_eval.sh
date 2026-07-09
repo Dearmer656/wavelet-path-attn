@@ -7,8 +7,8 @@
 #SBATCH --gres=gpu:a6000:4
 #SBATCH --time=100:00:00
 
-# PAT-222: RULER eval on LLaMA-2-7B-Chat (baseline + motif).
-MODEL="${MODEL:-NousResearch/Llama-2-7b-chat-hf}"
+# PAT-222: RULER eval on LLaMA-2-7B (base, no chat template needed).
+MODEL="${MODEL:-NousResearch/Llama-2-7b-hf}"
 MOTIF_NPZ="${MOTIF_NPZ:-}"
 LENGTHS="${LENGTHS:-4096 8192}"
 NPROC="${NPROC:-4}"
