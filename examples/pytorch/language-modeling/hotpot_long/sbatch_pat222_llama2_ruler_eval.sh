@@ -54,16 +54,19 @@ for L in ${LENGTHS}; do
     MAX_INPUT_FLAG=""
     [ "${MAX_INPUT_TOKENS}" != "0" ] && MAX_INPUT_FLAG="--max_input_tokens ${MAX_INPUT_TOKENS}"
 
+    # motif eval needs full-sequence attention (no KV cache); baseline is fine with cache
+    NO_CACHE_FLAG=""
+    [ -n "${MOTIF_NPZ}" ] && NO_CACHE_FLAG="--no_cache"
+
     python -m torch.distributed.run --nproc_per_node=${NPROC} --master_port=${MP} \
         ruler_motif_eval.py \
         --model "${MODEL}" \
         --jsonl "${JSONL}" \
         --L "${L}" \
         --lam "${LAM}" \
-        --no_cache \
         --dtype bfloat16 \
         --apply_chat_template \
-        ${MOTIF_ARG} ${N_CASES_FLAG} ${MAX_INPUT_FLAG} \
+        ${NO_CACHE_FLAG} ${MOTIF_ARG} ${N_CASES_FLAG} ${MAX_INPUT_FLAG} \
         --out "${OUT}"
     echo "--- done L=${L} ---"
 done

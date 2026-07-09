@@ -177,26 +177,33 @@ def main() -> None:
     eval_4096_rows = build_split(
         base_rows, tok, out_len_label=4096, target_tokens=4096, out_count=args.eval_count, seed=44
     )
+    eval_4080_rows = build_split(
+        base_rows, tok, out_len_label=4080, target_tokens=4080, out_count=args.eval_count, seed=46
+    )
     eval_8192_rows = build_split(
         base_rows, tok, out_len_label=8192, target_tokens=8192, out_count=args.eval_count, seed=45
     )
 
     train_path = args.outdir / "ruler_train_512.jsonl"
     eval_2048_path = args.outdir / "ruler_eval_2048.jsonl"
+    eval_4080_path = args.outdir / "ruler_eval_4080.jsonl"
     eval_4096_path = args.outdir / "ruler_eval_4096.jsonl"
     eval_8192_path = args.outdir / "ruler_eval_8192.jsonl"
 
     write_jsonl(train_path, train_rows)
     write_jsonl(eval_2048_path, eval_2048_rows)
+    write_jsonl(eval_4080_path, eval_4080_rows)
     write_jsonl(eval_4096_path, eval_4096_rows)
     write_jsonl(eval_8192_path, eval_8192_rows)
 
     summarize("train_512", train_rows, tok)
     summarize("eval_2048", eval_2048_rows, tok)
+    summarize("eval_4080", eval_4080_rows, tok)
     summarize("eval_4096", eval_4096_rows, tok)
     summarize("eval_8192", eval_8192_rows, tok)
     print(f"wrote: {train_path}")
     print(f"wrote: {eval_2048_path}")
+    print(f"wrote: {eval_4080_path}")
     print(f"wrote: {eval_4096_path}")
     print(f"wrote: {eval_8192_path}")
 
