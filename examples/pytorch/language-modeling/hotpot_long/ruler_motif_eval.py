@@ -121,7 +121,7 @@ def _install_pre_rope_hook_phi(model):
     model.model.register_forward_pre_hook(_reset_hook)
 
     orig_rotary = _PHI.apply_rotary_pos_emb
-    def _capture_rotary(q, k, cos, sin, position_ids, unsqueeze_dim=1):
+    def _capture_rotary(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
         li = _PRE_LAYER_CTR[0]
         _PRE_ROPE_CACHE[li] = (q, k)   # [B, nh/nkv, T, rot_dim]
         q_r, k_r = orig_rotary(q, k, cos, sin, position_ids, unsqueeze_dim)

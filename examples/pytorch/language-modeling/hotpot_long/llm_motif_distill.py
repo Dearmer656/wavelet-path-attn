@@ -45,7 +45,7 @@ def _install_rotary_capture_phi():
     import transformers.models.phi.modeling_phi as _PHI
     orig = _PHI.apply_rotary_pos_emb
 
-    def patched(q, k, cos, sin, position_ids, unsqueeze_dim=1):
+    def patched(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
         li = _LAYER_CTR[0]
         _CAPTURE[li] = {"q_pre": q.detach().float(), "k_pre": k.detach().float()}
         q_r, k_r = orig(q, k, cos, sin, position_ids, unsqueeze_dim)
