@@ -384,11 +384,16 @@ def run(a):
         gold_list = ex["outputs"]       # list of acceptable answers
         task      = ex.get("ruler_config", "unknown")
 
-        # No chat template: RULER input is self-contained; chat template adds overhead
-        # that forces truncation and removes needle records placed at the start.
-        # No left-truncation: pass the full prompt so the model sees all records.
-        # Positions beyond training length will be OOD — that is what we are testing.
-        ids = tok(raw_input, add_special_tokens=True, truncation=False)["input_ids"]
+        if a.apply_chat_template:
+            messages = [{"role": "user", "content": raw_input}]
+            formatted = tok.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True)
+            ids = tok(formatted, add_special_tokens=False, truncation=False)["input_ids"]
+        else:
+            ids = tok(raw_input, add_special_tokens=True, truncation=False)["input_ids"]
+
+        if a.max_input_tokens > 0 and len(ids) > a.max_input_tokens:
+            ids = ids[:a.max_input_tokens]
 
         input_t = torch.tensor([ids], dtype=torch.long, device=device)
         with torch.no_grad():
@@ -446,8 +451,10 @@ if __name__ == "__main__":
     ap.add_argument("--max_new_tokens",type=int, default=50)
     ap.add_argument("--motif_npz",     default="", help="path to llm_motif_L*.npz; empty=baseline")
     ap.add_argument("--lam",           type=float, default=1.0)
-    ap.add_argument("--no_cache",      action="store_true", help="use_cache=False for generation")
-    ap.add_argument("--dtype",         default="float32", help="torch dtype: float32 / bfloat16 / float16")
-    ap.add_argument("--out",           default="analysis_outputs/pat222/ruler")
-    ap.add_argument("--cache_dir",     default="/cl/work5/hongyu-s/huggingfac")
+    ap.add_argument("--no_cache",             action="store_true", help="use_cache=False for generation")
+    ap.add_argument("--apply_chat_template",  action="store_true", help="wrap input in model chat template")
+    ap.add_argument("--max_input_tokens",     type=int, default=0, help="if >0, truncate input ids to this length")
+    ap.add_argument("--dtype",                default="float32", help="torch dtype: float32 / bfloat16 / float16")
+    ap.add_argument("--out",                  default="analysis_outputs/pat222/ruler")
+    ap.add_argument("--cache_dir",            default="/cl/work5/hongyu-s/huggingfac")
     run(ap.parse_args())

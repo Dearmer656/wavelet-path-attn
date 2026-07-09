@@ -7,13 +7,14 @@
 #SBATCH --gres=gpu:a6000:4
 #SBATCH --time=100:00:00
 
-# PAT-222: RULER eval on LLaMA-2-7B (base, no chat template needed).
-MODEL="${MODEL:-NousResearch/Llama-2-7b-hf}"
+# PAT-222: RULER eval on LLaMA-2-7B-Chat with chat template.
+MODEL="${MODEL:-NousResearch/Llama-2-7b-chat-hf}"
 MOTIF_NPZ="${MOTIF_NPZ:-}"
 LENGTHS="${LENGTHS:-4096 8192}"
 NPROC="${NPROC:-4}"
 LAM="${LAM:-1.0}"
 N_CASES="${N_CASES:-0}"
+MAX_INPUT_TOKENS="${MAX_INPUT_TOKENS:-0}"
 
 _slack() {
     python3 /project/nlp-work5/hongyu-s/gate1/scripts/notify_slack.py \
@@ -50,6 +51,9 @@ for L in ${LENGTHS}; do
     N_CASES_FLAG=""
     [ "${N_CASES}" != "0" ] && N_CASES_FLAG="--n_cases ${N_CASES}"
 
+    MAX_INPUT_FLAG=""
+    [ "${MAX_INPUT_TOKENS}" != "0" ] && MAX_INPUT_FLAG="--max_input_tokens ${MAX_INPUT_TOKENS}"
+
     python -m torch.distributed.run --nproc_per_node=${NPROC} --master_port=${MP} \
         ruler_motif_eval.py \
         --model "${MODEL}" \
@@ -58,7 +62,8 @@ for L in ${LENGTHS}; do
         --lam "${LAM}" \
         --no_cache \
         --dtype bfloat16 \
-        ${MOTIF_ARG} ${N_CASES_FLAG} \
+        --apply_chat_template \
+        ${MOTIF_ARG} ${N_CASES_FLAG} ${MAX_INPUT_FLAG} \
         --out "${OUT}"
     echo "--- done L=${L} ---"
 done
