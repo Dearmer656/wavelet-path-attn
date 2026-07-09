@@ -51,19 +51,25 @@ def _extend_v_np(v_row, L0, T):
 
 
 def _build_bias_matrix(s_tab, v_tab, nl, nh, layer_idx, T, device, dtype, lam=1.0):
-    """[1, nh, T, T] bias — all heavy work on GPU, only O(nh*T) numpy transfer."""
+    """[1, nh, T, T] bias — in-place ops to minimise peak memory at large T.
+
+    Peak allocation: one [nh,T,T] tensor (4 GB at T=8192 bfloat16) instead of 3×.
+    """
     base = layer_idx * nh
     L0   = s_tab.shape[1]
-    # Upload 1-D s/v vectors per head (cheap: nh*T*4 bytes << T^2*4 bytes)
-    s_np = np.stack([_extend_s_np(s_tab[base + h], L0, T) for h in range(nh)])  # [nh, T]
-    v_np = np.stack([_extend_v_np(v_tab[base + h], L0, T) for h in range(nh)])  # [nh, T]
+    s_np = np.stack([_extend_s_np(s_tab[base + h], L0, T) for h in range(nh)])
+    v_np = np.stack([_extend_v_np(v_tab[base + h], L0, T) for h in range(nh)])
     s_t  = torch.from_numpy(s_np).to(device=device, dtype=dtype)  # [nh, T]
     v_t  = torch.from_numpy(v_np).to(device=device, dtype=dtype)  # [nh, T]
-    # Build O(T^2) on GPU via broadcast gather (single kernel, fast)
     idx  = torch.arange(T, device=device)
-    off  = (idx.unsqueeze(1) - idx.unsqueeze(0)).clamp(0, T - 1)  # [T, T]
-    bias = lam * (s_t[:, off] + v_t.unsqueeze(1))                  # [nh, T, T]
-    return bias.unsqueeze(0)                                        # [1, nh, T, T]
+    off  = (idx.unsqueeze(1) - idx.unsqueeze(0)).clamp(0, T - 1)  # [T, T] int64
+    bias = s_t[:, off]          # [nh, T, T] — one allocation
+    del off, s_t                 # free 512 MB + [nh,T] immediately
+    bias.add_(v_t.unsqueeze(1)) # in-place += v  (no extra [nh,T,T])
+    del v_t
+    if lam != 1.0:
+        bias.mul_(lam)           # in-place scale
+    return bias.unsqueeze(0)    # [1, nh, T, T] — view, no copy
 
 
 def _build_bias_row(s_tab, v_tab, nl, nh, layer_idx, pos, k_len, device, dtype, lam=1.0):
@@ -196,14 +202,17 @@ def patch_llama_attention(model, s_tab, v_tab, nl, nh, lf_mask_np,
             bias = _build_bias_matrix(s_, v_, nl_, nh_, li, k_len, dev, dt, lam_)
             if q_len < k_len:
                 bias = bias[:, :, k_len - q_len:, :]
-        attn_weights = attn_weights + bias
+        attn_weights.add_(bias)  # in-place: no extra [1,nh,T,T]
+        del bias
         # ────────────────────────────────────────────────────────────────────
 
         if attention_mask is not None:
             causal_mask = attention_mask[:, :, :, :k_use.shape[-2]]
-            attn_weights = attn_weights + causal_mask
+            attn_weights.add_(causal_mask)
 
-        attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query.dtype)
+        # float then softmax then cast back — avoids holding two float32 [T,T] simultaneously
+        attn_weights = attn_weights.float()
+        attn_weights = F.softmax(attn_weights, dim=-1).to(query.dtype)
         attn_weights = F.dropout(attn_weights, p=dropout, training=module.training)
         attn_output  = torch.matmul(attn_weights, value_states)
         attn_output  = attn_output.transpose(1, 2).contiguous()
@@ -280,13 +289,15 @@ def patch_phi_attention(model, s_tab, v_tab, nl, nh, lf_mask_np, lam=1.0):
                                    li, k_len, dev, attn_weights.dtype, st["lam"])
         if q_len < k_len:
             bias = bias[:, :, k_len - q_len:, :]
-        attn_weights = attn_weights + bias
+        attn_weights.add_(bias)
+        del bias
         # ─────────────────────────────────────────────────────────────────────
 
         if attention_mask is not None:
-            attn_weights = attn_weights + attention_mask[:, :, :, :k_len]
+            attn_weights.add_(attention_mask[:, :, :, :k_len])
 
-        attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query.dtype)
+        attn_weights = attn_weights.float()
+        attn_weights = F.softmax(attn_weights, dim=-1).to(query.dtype)
         attn_weights = F.dropout(attn_weights, p=dropout, training=module.training)
         attn_output  = torch.matmul(attn_weights, value_states).transpose(1, 2).contiguous()
         return attn_output, attn_weights
