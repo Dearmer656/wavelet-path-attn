@@ -213,15 +213,19 @@ def patch_llama_attention(model, s_tab, v_tab, nl, nh, lf_mask_np,
 
 
 def patch_phi_attention(model, s_tab, v_tab, nl, nh, lf_mask_np, lam=1.0):
-    """Patch PhiAttention.forward for motif injection + NoPE-lf substitution.
+    """Patch eager_attention_forward for Phi motif injection + NoPE-lf substitution.
 
-    Phi-2 specifics:
-      - partial_rotary_factor=0.4: only first rot_dim dims of Q/K get RoPE;
-        remaining dims are already NoPE (pass-through), so lf_mask is 0 there.
-      - No GQA (num_key_value_groups=1): repeat_kv is a no-op.
-      - Q/K upcast to float32 for matmul (Phi-2 numerical stability requirement).
+    Uses module-level eager_attention_forward patching (same pattern as Llama) because
+    PhiAttention.forward resolves attention_interface via runtime name lookup:
+        attention_interface: Callable = eager_attention_forward
+    So replacing _PHI.eager_attention_forward before each forward call is sufficient.
+
+    Phi-2 specifics handled here:
+      - partial_rotary_factor=0.4: only first rot_dim=32 dims of Q/K get RoPE;
+        remaining dims (32-79) are already pass-through NoPE, lf_mask is 0 there.
+      - No GQA (num_key_value_groups=1): repeat_kv is a no-op but written generically.
+      - _PRE_ROPE_CACHE[li] holds pre-rotation Q/K for the rotary dims only.
     """
-    import math as _math
     import transformers.models.phi.modeling_phi as _PHI
     from transformers.models.phi.modeling_phi import repeat_kv as _phi_repeat_kv
 
@@ -230,73 +234,50 @@ def patch_phi_attention(model, s_tab, v_tab, nl, nh, lf_mask_np, lam=1.0):
     _MOTIF_STATE["nl"]               = nl
     _MOTIF_STATE["nh"]               = nh
     _MOTIF_STATE["lam"]              = lam
-    _MOTIF_STATE["use_cache_inject"] = False   # Phi always uses no_cache path
+    _MOTIF_STATE["use_cache_inject"] = False
     lf_t = torch.from_numpy(lf_mask_np)
     _MOTIF_STATE["lf_f"] = lf_t.float()
     _MOTIF_STATE["hf_f"] = (1.0 - lf_t).float()
 
     _install_pre_rope_hook_phi(model)
 
-    def patched_phi_forward(self, hidden_states, attention_mask=None, position_ids=None,
-                            past_key_value=None, output_attentions=False, use_cache=False):
-        bsz, q_len, _ = hidden_states.size()
+    def patched_phi_eager(module, query, key, value, attention_mask,
+                          scaling, dropout=0.0, **kwargs):
+        st      = _MOTIF_STATE
+        dev     = query.device
+        li      = module.layer_idx
+        rot_dim = module.rotary_ndims          # 32 for Phi-2 (partial_rotary_factor=0.4)
 
-        query_states = self.q_proj(hidden_states)
-        key_states   = self.k_proj(hidden_states)
-        value_states = self.v_proj(hidden_states)
-
-        if self.qk_layernorm:
-            query_states = self.q_layernorm(query_states)
-            key_states   = self.k_layernorm(key_states)
-
-        query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
-        key_states   = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-        value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-
-        # use_cache=False throughout: past_key_value is always None
-        kv_seq_len = key_states.shape[-2]
-        cos, sin   = self.rotary_emb(value_states, seq_len=kv_seq_len)
-
-        rot_dim    = self.rotary_emb.dim
-        query_rot  = query_states[..., :rot_dim]
-        query_pass = query_states[..., rot_dim:]
-        key_rot    = key_states[..., :rot_dim]
-        key_pass   = key_states[..., rot_dim:]
-
-        # This call is intercepted by _install_pre_rope_hook_phi, which stores
-        # pre-rotation (q_rot, k_rot) and returns rotated versions.
-        query_rot, key_rot = _PHI.apply_rotary_pos_emb(
-            query_rot, key_rot, cos, sin, position_ids)
+        lf_f = st["lf_f"][:rot_dim].to(dev)   # [rot_dim] 1=low-freq NoPE target
+        hf_f = st["hf_f"][:rot_dim].to(dev)   # [rot_dim] 1=high-freq keep RoPE
 
         # ── NoPE-lf substitution on low-freq rotary dims ─────────────────────
-        dev  = hidden_states.device
-        st   = _MOTIF_STATE
-        li   = self.layer_idx
-        lf_f = st["lf_f"][:rot_dim].to(dev)   # [rot_dim], 1=low-freq
-        hf_f = st["hf_f"][:rot_dim].to(dev)   # [rot_dim], 1=high-freq
+        # query/key enter as post-RoPE [B, nh/nkv, T, hd]; rotary dims are [: rot_dim].
+        # _PRE_ROPE_CACHE[li] stores pre-rotation Q/K with shape [B, nh/nkv, T, rot_dim].
         if li in _PRE_ROPE_CACHE:
-            q_pre_rot, k_pre_rot = _PRE_ROPE_CACHE[li]   # [B, nh/nkv, T, rot_dim]
-            query_rot = query_rot * hf_f + q_pre_rot * lf_f
-            # Phi-2 has no GQA so repeat_interleave is a no-op (groups=1)
-            k_pre_exp = k_pre_rot.repeat_interleave(self.num_key_value_groups, dim=1)
-            key_rot_full = _phi_repeat_kv(key_rot, self.num_key_value_groups)
-            key_rot   = key_rot_full * hf_f + k_pre_exp * lf_f
+            q_pre_rot, k_pre_rot = _PRE_ROPE_CACHE[li]
+            q_rot_new = query[..., :rot_dim] * hf_f + q_pre_rot * lf_f
+            q_use     = torch.cat([q_rot_new, query[..., rot_dim:]], dim=-1)
+
+            key_full  = _phi_repeat_kv(key, module.num_key_value_groups)  # [B,nh,T,hd]
+            k_pre_exp = k_pre_rot.repeat_interleave(module.num_key_value_groups, dim=1)
+            k_rot_new = key_full[..., :rot_dim] * hf_f + k_pre_exp * lf_f
+            k_use     = torch.cat([k_rot_new, key_full[..., rot_dim:]], dim=-1)
         else:
-            key_rot = _phi_repeat_kv(key_rot, self.num_key_value_groups)
+            q_use    = query
+            k_use    = _phi_repeat_kv(key, module.num_key_value_groups)
         # ─────────────────────────────────────────────────────────────────────
 
-        query_states = torch.cat((query_rot,  query_pass), dim=-1)
-        key_states   = torch.cat((key_rot,    _phi_repeat_kv(key_pass, self.num_key_value_groups)), dim=-1)
-        value_states = _phi_repeat_kv(value_states, self.num_key_value_groups)
+        value_states = _phi_repeat_kv(value, module.num_key_value_groups)
 
-        k_len = key_states.shape[-2]
-        # Phi-2 upcasts to float32 for numerical stability
-        attn_weights = torch.matmul(query_states.to(torch.float32),
-                                    key_states.to(torch.float32).transpose(2, 3)) / _math.sqrt(self.head_dim)
+        q_len = q_use.shape[-2]
+        k_len = k_use.shape[-2]
+
+        attn_weights = torch.matmul(q_use, k_use.transpose(2, 3)) * scaling
 
         # ── motif bias ────────────────────────────────────────────────────────
         bias = _build_bias_matrix(st["s_tab"], st["v_tab"], st["nl"], st["nh"],
-                                   li, k_len, dev, torch.float32, st["lam"])
+                                   li, k_len, dev, attn_weights.dtype, st["lam"])
         if q_len < k_len:
             bias = bias[:, :, k_len - q_len:, :]
         attn_weights = attn_weights + bias
@@ -305,20 +286,12 @@ def patch_phi_attention(model, s_tab, v_tab, nl, nh, lf_mask_np, lam=1.0):
         if attention_mask is not None:
             attn_weights = attn_weights + attention_mask[:, :, :, :k_len]
 
-        attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32).to(value_states.dtype)
-        attn_weights = F.dropout(attn_weights, p=self.attention_dropout, training=self.training)
+        attn_weights = F.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query.dtype)
+        attn_weights = F.dropout(attn_weights, p=dropout, training=module.training)
+        attn_output  = torch.matmul(attn_weights, value_states).transpose(1, 2).contiguous()
+        return attn_output, attn_weights
 
-        attn_output = torch.matmul(attn_weights, value_states)
-        attn_output = attn_output.transpose(1, 2).contiguous()
-        attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
-        attn_output = self.dense(attn_output)
-
-        if not output_attentions:
-            attn_weights = None
-
-        return attn_output, attn_weights, past_key_value
-
-    _PHI.PhiAttention.forward = patched_phi_forward
+    _PHI.eager_attention_forward = patched_phi_eager
 
 
 # ── RULER scoring ─────────────────────────────────────────────────────────────
