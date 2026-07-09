@@ -385,10 +385,9 @@ def run(a):
         task      = ex.get("ruler_config", "unknown")
 
         if a.apply_chat_template:
-            messages = [{"role": "user", "content": raw_input}]
-            formatted = tok.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True)
-            ids = tok(formatted, add_special_tokens=False, truncation=False)["input_ids"]
+            # LLaMA-2-Chat format; hardcoded because NousResearch mirror lacks chat_template
+            formatted = f"[INST] {raw_input} [/INST]"
+            ids = tok(formatted, add_special_tokens=True, truncation=False)["input_ids"]
         else:
             ids = tok(raw_input, add_special_tokens=True, truncation=False)["input_ids"]
 
