@@ -21,8 +21,10 @@ import transformers.models.llama.modeling_llama as _M
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 # ── per-forward rotation capture ─────────────────────────────────────────────
-_CAPTURE = {}   # layer_idx -> {q_pre, q_post, k_pre, k_post}
+_CAPTURE = {}       # layer_idx -> {q_pre, q_post, k_pre, k_post}
 _LAYER_CTR = [0]
+_TARGET_LAYER = [None]   # None = capture all; int = capture only that layer
+
 
 def _install_rotary_capture():
     """Hook Llama-style apply_rotary_pos_emb (full head_dim)."""
@@ -30,10 +32,13 @@ def _install_rotary_capture():
 
     def patched(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
         li = _LAYER_CTR[0]
-        _CAPTURE[li] = {"q_pre": q.detach().float(), "k_pre": k.detach().float()}
+        cap = (_TARGET_LAYER[0] is None or li == _TARGET_LAYER[0])
+        if cap:
+            _CAPTURE[li] = {"q_pre": q.detach().float(), "k_pre": k.detach().float()}
         q_r, k_r = orig(q, k, cos, sin, position_ids, unsqueeze_dim)
-        _CAPTURE[li]["q_post"] = q_r.detach().float()
-        _CAPTURE[li]["k_post"] = k_r.detach().float()
+        if cap:
+            _CAPTURE[li]["q_post"] = q_r.detach().float()
+            _CAPTURE[li]["k_post"] = k_r.detach().float()
         _LAYER_CTR[0] += 1
         return q_r, k_r
 
@@ -47,10 +52,13 @@ def _install_rotary_capture_phi():
 
     def patched(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
         li = _LAYER_CTR[0]
-        _CAPTURE[li] = {"q_pre": q.detach().float(), "k_pre": k.detach().float()}
+        cap = (_TARGET_LAYER[0] is None or li == _TARGET_LAYER[0])
+        if cap:
+            _CAPTURE[li] = {"q_pre": q.detach().float(), "k_pre": k.detach().float()}
         q_r, k_r = orig(q, k, cos, sin, position_ids, unsqueeze_dim)
-        _CAPTURE[li]["q_post"] = q_r.detach().float()
-        _CAPTURE[li]["k_post"] = k_r.detach().float()
+        if cap:
+            _CAPTURE[li]["q_post"] = q_r.detach().float()
+            _CAPTURE[li]["k_post"] = k_r.detach().float()
         _LAYER_CTR[0] += 1
         return q_r, k_r
 
@@ -148,40 +156,9 @@ def run(a):
     print(f"[distill] L={a.L}: {len(cases)} cases loaded", flush=True)
     assert cases, "no cases found — check --jsonl and --L"
 
-    # accumulate low-freq residual
-    Bsum = np.zeros((nl, nh, T, T), np.float64)
-
-    for ci, ids in enumerate(cases):
-        _reset_capture()
-        with torch.no_grad():
-            model(torch.tensor([ids], device=dev))
-
-        for li in range(nl):
-            cap = _CAPTURE[li]
-            q_pre  = cap["q_pre"][0]   # [nh,  T, rot_dim]  (rot_dim==hd for Llama; <hd for Phi)
-            q_post = cap["q_post"][0]
-            k_pre  = cap["k_pre"][0]   # [nkv, T, rot_dim]
-            k_post = cap["k_post"][0]
-
-            # repeat KV to match Q heads (no-op for Phi-2 which has no GQA)
-            k_pre  = k_pre.repeat_interleave(g, dim=0)
-            k_post = k_post.repeat_interleave(g, dim=0)
-
-            # dm_dev sliced to match the actual rotated dim (Phi-2: rot_dim=32, hd=80)
-            rot_dim = q_pre.shape[-1]
-            dm_dev  = dm.squeeze()[:rot_dim].to(q_post.device)   # [rot_dim]
-
-            qp = (q_post * dm_dev); kp = (k_post * dm_dev)   # low-freq post-RoPE
-            qn = (q_pre  * dm_dev); kn = (k_pre  * dm_dev)   # low-freq pre-RoPE (NoPE)
-
-            B_rope = torch.einsum("htd,hsd->hts", qp, kp).cpu().numpy() * scale
-            B_nope = torch.einsum("htd,hsd->hts", qn, kn).cpu().numpy() * scale
-            Bsum[li] += (B_rope - B_nope)
-
-        print(f"  case {ci} done", flush=True)
-
-    B = (Bsum / len(cases)).astype(np.float32)   # [nl, nh, T, T]
-
+    # accumulate low-freq residual — layer-by-layer to keep RAM bounded at O(nh*T*T)
+    # For L=4096: one layer = [32,4096,4096]*4 bytes ≈ 2 GB, vs full [nl,nh,T,T]=137 GB.
+    # Cost: nl × n_cases forward passes instead of n_cases. Acceptable for n_cases=10.
     tril = np.tril_indices(T); ii, jj = tril; off = ii - jj
     cnt_off = np.maximum(np.bincount(off, minlength=T), 1)
     cnt_col = np.maximum(np.bincount(jj,  minlength=T), 1)
@@ -189,14 +166,49 @@ def run(a):
     S_tab = np.zeros((nl * nh, T), np.float32)
     V_tab = np.zeros((nl * nh, T), np.float32)
     rows  = []
+
     for li in range(nl):
+        _TARGET_LAYER[0] = li          # hook captures only this layer
+        Bsum_li = np.zeros((nh, T, T), np.float32)
+
+        for ci, ids in enumerate(cases):
+            _reset_capture()
+            with torch.no_grad():
+                model(torch.tensor([ids], device=dev))
+
+            cap = _CAPTURE[li]
+            q_pre  = cap["q_pre"][0]   # [nh,  T, rot_dim]
+            q_post = cap["q_post"][0]
+            k_pre  = cap["k_pre"][0]   # [nkv, T, rot_dim]
+            k_post = cap["k_post"][0]
+
+            k_pre  = k_pre.repeat_interleave(g, dim=0)
+            k_post = k_post.repeat_interleave(g, dim=0)
+
+            rot_dim = q_pre.shape[-1]
+            dm_dev  = dm.squeeze()[:rot_dim].to(q_post.device)
+
+            qp = (q_post * dm_dev); kp = (k_post * dm_dev)
+            qn = (q_pre  * dm_dev); kn = (k_pre  * dm_dev)
+
+            B_rope = torch.einsum("htd,hsd->hts", qp, kp).cpu().numpy() * scale
+            B_nope = torch.einsum("htd,hsd->hts", qn, kn).cpu().numpy() * scale
+            Bsum_li += (B_rope - B_nope).astype(np.float32)
+            _CAPTURE.clear()
+
+        B_li = Bsum_li / len(cases)
+        del Bsum_li
+
         for hi in range(nh):
-            s, v, ve, sf = additive_fit(B[li, hi], ii, jj, off, cnt_off, cnt_col, T)
+            s, v, ve, sf = additive_fit(B_li[hi], ii, jj, off, cnt_off, cnt_col, T)
             idx = li * nh + hi
             S_tab[idx] = s; V_tab[idx] = v
             rows.append({"layer": li, "head": hi, "var_explained": ve, "slash_frac": sf})
             if hi == 0:
                 print(f"  L{li:02d} h00 var_exp={ve:.4f} slash_frac={sf:.3f}", flush=True)
+
+        del B_li
+        print(f"  layer {li} done", flush=True)
 
     npz_path = os.path.join(a.out, f"llm_motif_L{a.L}.npz")
     np.savez(npz_path, s=S_tab, v=V_tab,

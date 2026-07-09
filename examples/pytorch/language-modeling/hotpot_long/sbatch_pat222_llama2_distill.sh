@@ -7,10 +7,10 @@
 #SBATCH --gres=gpu:a6000:1
 #SBATCH --time=100:00:00
 
-# PAT-222: Distill slash+sink motif from LLaMA-2-7B (base) at L=4096 (training length).
-MODEL="${MODEL:-NousResearch/Llama-2-7b-hf}"
+# PAT-222: Distill slash+sink motif from LLaMA-2-7B-Chat at L=4096 (training length).
+MODEL="${MODEL:-NousResearch/Llama-2-7b-chat-hf}"
 L="${L:-4096}"
-N_CASES="${N_CASES:-20}"
+N_CASES="${N_CASES:-10}"
 
 _slack() {
     python3 /project/nlp-work5/hongyu-s/gate1/scripts/notify_slack.py \
