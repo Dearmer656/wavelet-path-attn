@@ -16,7 +16,7 @@ _slack() {
     python3 /project/nlp-work5/hongyu-s/gate1/scripts/notify_slack.py \
         --exit-code "$1" --job-id "${SLURM_JOB_ID}" --node "${SLURMD_NODENAME}" \
         --issue "PAT-222" --gpu "1xa6000" \
-        --summary "PAT-222 LLaMA-2-7B distill L=${L}" 2>/dev/null || true
+        --summary "PAT-222 LLaMA-2-7B distill L=${L}${OUT_SUFFIX:-}" 2>/dev/null || true
 }
 trap '_slack $?' EXIT
 set -euxo pipefail
@@ -31,7 +31,7 @@ export WANDB_DISABLED=true
 export PYTHONUNBUFFERED=1
 
 BASE=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling
-OUT=${BASE}/hotpot_long/analysis_outputs/pat222/llama2
+OUT=${BASE}/hotpot_long/analysis_outputs/pat222/llama2${OUT_SUFFIX:+${OUT_SUFFIX}}
 
 cd "${BASE}/hotpot_long"
 mkdir -p logs "${OUT}"
