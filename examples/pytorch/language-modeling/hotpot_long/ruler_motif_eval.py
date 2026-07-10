@@ -413,7 +413,8 @@ def run(a):
 
         score = ruler_score(pred, gold_list)
         records.append({"score": score, "task": task, "pred": pred,
-                        "gold": gold_list[0], "case_idx": ci})
+                        "gold": gold_list[0], "case_idx": ci,
+                        "depth": ex.get("depth")})
 
         if rank == 0 and (ci + 1) % 20 == 0:
             acc = np.mean([r["score"] for r in records])

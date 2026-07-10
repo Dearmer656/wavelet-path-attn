@@ -15,6 +15,8 @@ NPROC="${NPROC:-4}"
 LAM="${LAM:-1.0}"
 N_CASES="${N_CASES:-0}"
 MAX_INPUT_TOKENS="${MAX_INPUT_TOKENS:-0}"
+JSONL_PREFIX="${JSONL_PREFIX:-ruler_eval}"   # ruler_eval (v1) or ruler_v2
+OUT_TAG="${OUT_TAG:-}"                        # optional suffix for output json name
 
 _slack() {
     python3 /project/nlp-work5/hongyu-s/gate1/scripts/notify_slack.py \
@@ -36,13 +38,13 @@ export PYTHONUNBUFFERED=1
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 BASE=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling
-OUT=${BASE}/hotpot_long/analysis_outputs/pat222/llama2/ruler
+OUT=${BASE}/hotpot_long/analysis_outputs/pat222/llama2/ruler${OUT_TAG:+/${OUT_TAG}}
 
 cd "${BASE}/hotpot_long"
 mkdir -p logs "${OUT}"
 
 for L in ${LENGTHS}; do
-    JSONL=${BASE}/hotpot_long/data/ruler_eval_${L}.jsonl
+    JSONL=${BASE}/hotpot_long/data/${JSONL_PREFIX}_${L}.jsonl
     echo "=== L=${L} ==="
     MP=$(( 22000 + SLURM_JOB_ID % 3000 + L % 1000 ))
 
