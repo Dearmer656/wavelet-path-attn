@@ -403,7 +403,22 @@ def run(a):
     if a.motif_npz:
         d = np.load(a.motif_npz)
         s_tab, v_tab = d["s"], d["v"]
-        lf_mask_np   = d["dmask"].astype(np.float32)   # [head_dim], 1=low-freq
+        if a.clamp_period_cutoff > 0:
+            # Correct HF-Llama rotate_half layout: freq m rotates plane (m, m+hd/2).
+            # (npz dmask uses the interleaved GPT-J layout — wrong for HF Llama.)
+            inv = model.model.rotary_emb.inv_freq.detach().float().cpu().numpy()
+            periods = 2.0 * np.pi / np.clip(inv, 1e-12, None)
+            hd_ = 2 * len(inv)
+            lf_mask_np = np.zeros(hd_, np.float32)
+            sel = periods > a.clamp_period_cutoff
+            lf_mask_np[:hd_ // 2][sel] = 1.0
+            lf_mask_np[hd_ // 2:][sel] = 1.0
+            if rank == 0:
+                print(f"[ruler-eval] period cutoff {a.clamp_period_cutoff:g}: "
+                      f"{int(lf_mask_np.sum())}/{hd_} dims ({int(sel.sum())}/{len(inv)} freqs) "
+                      f"selected (rotate_half layout)", flush=True)
+        else:
+            lf_mask_np = d["dmask"].astype(np.float32)   # [head_dim], 1=low-freq
         if is_phi:
             patch_phi_attention(model, s_tab, v_tab, nl, nh, lf_mask_np, lam=a.lam)
         else:
@@ -503,6 +518,7 @@ def run(a):
         if a.motif_npz:
             tag = "motif"
             if a.motif_mode != "nope": tag += f"-{a.motif_mode}"
+            if a.clamp_period_cutoff > 0: tag += f"-pc{int(a.clamp_period_cutoff)}"
             if a.motif_no_nope: tag += "-nonope"
             if a.motif_no_bias: tag += "-nobias"
             if a.motif_gate_delta >= 0: tag += f"-gate{a.motif_gate_delta}"
@@ -534,6 +550,9 @@ if __name__ == "__main__":
     ap.add_argument("--motif_mode", choices=["nope", "clamp_lf", "clamp_full"], default="nope",
                     help="substitution for gated pairs: nope (pre-rotation lf), "
                          "clamp_lf (lf dims at clamped delta0), clamp_full (all dims clamped = ReRoPE)")
+    ap.add_argument("--clamp_period_cutoff", type=float, default=0.0,
+                    help=">0: recompute lf mask as dims with RoPE period > this, in the correct "
+                         "HF-Llama rotate_half layout (overrides npz dmask). Enables cutoff sweep.")
     ap.add_argument("--no_cache",             action="store_true", help="use_cache=False for generation")
     ap.add_argument("--apply_chat_template",  action="store_true", help="wrap input in model chat template")
     ap.add_argument("--max_input_tokens",     type=int, default=0, help="if >0, truncate input ids to this length")

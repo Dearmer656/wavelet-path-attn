@@ -71,21 +71,26 @@ def _reset_capture():
 
 # ── low-freq dim mask (same logic as PAT-208/217) ────────────────────────────
 def lowfreq_dim_mask(model, head_dim, period_cutoff):
-    """Return float32 mask [head_dim]: 1 on dims whose RoPE period > cutoff."""
-    # rotary_emb is at model.model.rotary_emb (shared, new-style Llama) or per-layer attn
+    """Return float32 mask [head_dim]: 1 on dims whose RoPE period > cutoff.
+
+    HF Llama rotate_half layout: frequency m rotates the plane (m, m + head_dim//2)
+    — NOT the interleaved (2m, 2m+1) GPT-J layout. Using the wrong layout splits
+    each frequency's cos/sin pair and corrupts every rotation plane it touches.
+    """
     re = getattr(model.model, "rotary_emb", None)
     if re is None:
         re = model.model.layers[0].self_attn.rotary_emb
     inv_freq = re.inv_freq.detach().float().cpu().numpy()   # [head_dim//2]
     periods = 2.0 * np.pi / np.clip(inv_freq, 1e-12, None)
+    half = head_dim // 2
     mask = np.zeros(head_dim, np.float32)
     n_off = 0
     for mi, p in enumerate(periods):
         if p > period_cutoff:
-            mask[2 * mi] = 1.0; mask[2 * mi + 1] = 1.0
+            mask[mi] = 1.0; mask[mi + half] = 1.0
             n_off += 1
     print(f"[distill] low-freq (P>{period_cutoff}): {int(mask.sum())}/{head_dim} dims "
-          f"({n_off}/{len(periods)} pairs)", flush=True)
+          f"({n_off}/{len(periods)} pairs, rotate_half layout)", flush=True)
     return mask
 
 
