@@ -137,7 +137,8 @@ def _install_pre_rope_hook_phi(model):
 
 
 def patch_llama_attention(model, s_tab, v_tab, nl, nh, lf_mask_np,
-                          lam=1.0, use_cache_inject=False):
+                          lam=1.0, use_cache_inject=False,
+                          use_nope=True, use_bias=True):
     """Patch eager_attention_forward to inject motif with NoPE-lf substitution.
 
     For low-freq RoPE dims (period > period_cutoff), we replace post-RoPE Q/K with their
@@ -153,11 +154,15 @@ def patch_llama_attention(model, s_tab, v_tab, nl, nh, lf_mask_np,
     _MOTIF_STATE["nh"]               = nh
     _MOTIF_STATE["lam"]              = lam
     _MOTIF_STATE["use_cache_inject"] = use_cache_inject
+    _MOTIF_STATE["use_bias"]         = use_bias
     lf_t = torch.from_numpy(lf_mask_np)
     _MOTIF_STATE["lf_f"]  = lf_t.float()          # [head_dim] float  1=low-freq
     _MOTIF_STATE["hf_f"]  = (1.0 - lf_t).float()  # [head_dim] float  1=high-freq
 
-    _install_pre_rope_hook(model)
+    # NoPE-lf substitution only active when the pre-RoPE hook is installed;
+    # skipping the hook = _PRE_ROPE_CACHE stays empty = substitution branch never fires.
+    if use_nope:
+        _install_pre_rope_hook(model)
 
     import transformers.models.llama.modeling_llama as _LM
     _orig = _LM.eager_attention_forward
@@ -195,15 +200,16 @@ def patch_llama_attention(model, s_tab, v_tab, nl, nh, lf_mask_np,
         attn_weights = torch.matmul(q_use, k_use.transpose(2, 3)) * scaling
 
         # ── motif injection ──────────────────────────────────────────────────
-        if st["use_cache_inject"] and q_len == 1 and k_len > 1:
-            pos  = k_len - 1
-            bias = _build_bias_row(s_, v_, nl_, nh_, li, pos, k_len, dev, dt, lam_)
-        else:
-            bias = _build_bias_matrix(s_, v_, nl_, nh_, li, k_len, dev, dt, lam_)
-            if q_len < k_len:
-                bias = bias[:, :, k_len - q_len:, :]
-        attn_weights.add_(bias)  # in-place: no extra [1,nh,T,T]
-        del bias
+        if st.get("use_bias", True):
+            if st["use_cache_inject"] and q_len == 1 and k_len > 1:
+                pos  = k_len - 1
+                bias = _build_bias_row(s_, v_, nl_, nh_, li, pos, k_len, dev, dt, lam_)
+            else:
+                bias = _build_bias_matrix(s_, v_, nl_, nh_, li, k_len, dev, dt, lam_)
+                if q_len < k_len:
+                    bias = bias[:, :, k_len - q_len:, :]
+            attn_weights.add_(bias)  # in-place: no extra [1,nh,T,T]
+            del bias
         # ────────────────────────────────────────────────────────────────────
 
         if attention_mask is not None:
@@ -358,12 +364,16 @@ def run(a):
             patch_phi_attention(model, s_tab, v_tab, nl, nh, lf_mask_np, lam=a.lam)
         else:
             patch_llama_attention(model, s_tab, v_tab, nl, nh, lf_mask_np,
-                                  lam=a.lam, use_cache_inject=not a.no_cache)
+                                  lam=a.lam, use_cache_inject=not a.no_cache,
+                                  use_nope=not a.motif_no_nope,
+                                  use_bias=not a.motif_no_bias)
         if rank == 0:
             n_lf = int(lf_mask_np.sum())
             arch = "phi" if is_phi else "llama"
             print(f"[ruler-eval] motif injected ({arch}) from {a.motif_npz} "
-                  f"(NoPE-lf on {n_lf}/{len(lf_mask_np)} dims)", flush=True)
+                  f"(NoPE-lf on {n_lf}/{len(lf_mask_np)} dims, "
+                  f"nope={'off' if a.motif_no_nope else 'on'}, "
+                  f"bias={'off' if a.motif_no_bias else 'on'}, lam={a.lam})", flush=True)
 
     # load cases
     cases = []
@@ -444,7 +454,13 @@ def run(a):
             print(f"  {t:40s}  acc={np.mean(scores):.4f}  n={len(scores)}")
 
         os.makedirs(a.out, exist_ok=True)
-        tag = "motif" if a.motif_npz else "baseline"
+        if a.motif_npz:
+            tag = "motif"
+            if a.motif_no_nope: tag += "-nonope"
+            if a.motif_no_bias: tag += "-nobias"
+            if a.lam != 1.0:    tag += f"-lam{a.lam:g}"
+        else:
+            tag = "baseline"
         out_json = os.path.join(a.out, f"ruler_{tag}_L{a.L}.json")
         with open(out_json, "w") as f:
             json.dump({"acc": float(acc_all), "L": a.L, "n": len(records),
@@ -462,6 +478,8 @@ if __name__ == "__main__":
     ap.add_argument("--max_new_tokens",type=int, default=50)
     ap.add_argument("--motif_npz",     default="", help="path to llm_motif_L*.npz; empty=baseline")
     ap.add_argument("--lam",           type=float, default=1.0)
+    ap.add_argument("--motif_no_nope", action="store_true", help="ablation: disable NoPE-lf substitution (bias only)")
+    ap.add_argument("--motif_no_bias", action="store_true", help="ablation: disable motif bias (NoPE-lf only)")
     ap.add_argument("--no_cache",             action="store_true", help="use_cache=False for generation")
     ap.add_argument("--apply_chat_template",  action="store_true", help="wrap input in model chat template")
     ap.add_argument("--max_input_tokens",     type=int, default=0, help="if >0, truncate input ids to this length")

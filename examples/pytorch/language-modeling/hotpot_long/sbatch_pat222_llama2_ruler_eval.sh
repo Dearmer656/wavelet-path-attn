@@ -16,7 +16,8 @@ LAM="${LAM:-1.0}"
 N_CASES="${N_CASES:-0}"
 MAX_INPUT_TOKENS="${MAX_INPUT_TOKENS:-0}"
 JSONL_PREFIX="${JSONL_PREFIX:-ruler_eval}"   # ruler_eval (v1) or ruler_v2
-OUT_TAG="${OUT_TAG:-}"                        # optional suffix for output json name
+OUT_TAG="${OUT_TAG:-}"                        # optional subdir for outputs
+EXTRA_FLAGS="${EXTRA_FLAGS:-}"                # e.g. --motif_no_nope / --motif_no_bias
 
 _slack() {
     python3 /project/nlp-work5/hongyu-s/gate1/scripts/notify_slack.py \
@@ -69,7 +70,7 @@ for L in ${LENGTHS}; do
         --lam "${LAM}" \
         --dtype bfloat16 \
         --apply_chat_template \
-        ${NO_CACHE_FLAG} ${MOTIF_ARG} ${N_CASES_FLAG} ${MAX_INPUT_FLAG} \
+        ${NO_CACHE_FLAG} ${MOTIF_ARG} ${N_CASES_FLAG} ${MAX_INPUT_FLAG} ${EXTRA_FLAGS} \
         --out "${OUT}"
     echo "--- done L=${L} ---"
 done
