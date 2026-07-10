@@ -27,7 +27,7 @@ import torch.nn.functional as F
 import torch.distributed as dist
 import transformers.models.llama.modeling_llama as _M
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
-from transformers.models.llama.modeling_llama import repeat_kv
+from transformers.models.llama.modeling_llama import repeat_kv, rotate_half
 
 
 # ── bias helpers — GPU-native, no large numpy arrays ─────────────────────────
@@ -138,7 +138,8 @@ def _install_pre_rope_hook_phi(model):
 
 def patch_llama_attention(model, s_tab, v_tab, nl, nh, lf_mask_np,
                           lam=1.0, use_cache_inject=False,
-                          use_nope=True, use_bias=True, gate_delta=-1):
+                          use_nope=True, use_bias=True, gate_delta=-1,
+                          mode="nope"):
     """Patch eager_attention_forward to inject motif with NoPE-lf substitution.
 
     For low-freq RoPE dims (period > period_cutoff), we replace post-RoPE Q/K with their
@@ -156,6 +157,16 @@ def patch_llama_attention(model, s_tab, v_tab, nl, nh, lf_mask_np,
     _MOTIF_STATE["use_cache_inject"] = use_cache_inject
     _MOTIF_STATE["use_bias"]         = use_bias
     _MOTIF_STATE["gate_delta"]       = gate_delta
+    _MOTIF_STATE["mode"]             = mode
+    if mode in ("clamp_lf", "clamp_full"):
+        # cos/sin of the clamped relative distance δ0 for every rotary dim.
+        # For gated pairs the lf (or all) dims see phase θ_m·δ0 — the largest
+        # phase the model was trained on — instead of an unseen OOD phase.
+        assert gate_delta >= 0, "clamp modes require --motif_gate_delta"
+        inv = model.model.rotary_emb.inv_freq.detach().float().cpu()   # [hd/2]
+        ang = torch.cat([inv, inv]) * float(gate_delta)                # [hd]
+        _MOTIF_STATE["cos_d0"] = ang.cos()
+        _MOTIF_STATE["sin_d0"] = ang.sin()
     lf_t = torch.from_numpy(lf_mask_np)
     _MOTIF_STATE["lf_f"]  = lf_t.float()          # [head_dim] float  1=low-freq
     _MOTIF_STATE["hf_f"]  = (1.0 - lf_t).float()  # [head_dim] float  1=high-freq
@@ -181,16 +192,29 @@ def patch_llama_attention(model, s_tab, v_tab, nl, nh, lf_mask_np,
         value_states = repeat_kv(value, module.num_key_value_groups)
         gate_d = st.get("gate_delta", -1)
 
-        # ── NoPE substitution on low-freq dims ───────────────────────────────
-        # For OOD lengths, low-freq RoPE phases are broken. Replace with pre-rotation
-        # values via mask multiply (avoids slow CUDA boolean scatter/gather).
-        # q_use = query * hf_mask + q_pre * lf_mask  (element-wise, coalesced)
+        # ── substituted Q/K for gated (OOD-δ) pairs ──────────────────────────
+        # mode=nope:       lf dims use pre-rotation values (NoPE) — needs bias to
+        #                  restore the mean positional profile.
+        # mode=clamp_lf:   lf dims use RoPE at clamped relative distance δ0 —
+        #                  content-dependent q·k with the largest TRAINED phase.
+        # mode=clamp_full: all dims clamped at δ0 (= ReRoPE, comparison baseline).
         k_orig = repeat_kv(key, module.num_key_value_groups)
+        mode_ = st.get("mode", "nope")
         if li in _PRE_ROPE_CACHE:
             q_pre, k_pre = _PRE_ROPE_CACHE[li]
-            q_use     = query * hf_f + q_pre * lf_f                                   # [B,nh,T,hd]
             k_pre_exp = k_pre.repeat_interleave(module.num_key_value_groups, dim=1)    # [B,nh,T,hd]
-            k_use     = k_orig * hf_f + k_pre_exp * lf_f
+            if mode_ == "nope":
+                q_sub = q_pre
+            else:
+                cos = st["cos_d0"].to(device=query.device, dtype=query.dtype)
+                sin = st["sin_d0"].to(device=query.device, dtype=query.dtype)
+                q_sub = q_pre * cos + rotate_half(q_pre) * sin   # q rotated by δ0; k unrotated
+            if mode_ == "clamp_full":
+                q_use = q_sub
+                k_use = k_pre_exp
+            else:
+                q_use = query * hf_f + q_sub * lf_f                                   # [B,nh,T,hd]
+                k_use = k_orig * hf_f + k_pre_exp * lf_f
         else:
             q_use = query
             k_use = k_orig
@@ -387,7 +411,8 @@ def run(a):
                                   lam=a.lam, use_cache_inject=not a.no_cache,
                                   use_nope=not a.motif_no_nope,
                                   use_bias=not a.motif_no_bias,
-                                  gate_delta=a.motif_gate_delta)
+                                  gate_delta=a.motif_gate_delta,
+                                  mode=a.motif_mode)
         if rank == 0:
             n_lf = int(lf_mask_np.sum())
             arch = "phi" if is_phi else "llama"
@@ -477,6 +502,7 @@ def run(a):
         os.makedirs(a.out, exist_ok=True)
         if a.motif_npz:
             tag = "motif"
+            if a.motif_mode != "nope": tag += f"-{a.motif_mode}"
             if a.motif_no_nope: tag += "-nonope"
             if a.motif_no_bias: tag += "-nobias"
             if a.motif_gate_delta >= 0: tag += f"-gate{a.motif_gate_delta}"
@@ -505,6 +531,9 @@ if __name__ == "__main__":
     ap.add_argument("--motif_gate_delta", type=int, default=-1,
                     help=">=0: apply substitution/bias only to pairs with offset delta > this "
                          "(position-gated; identity with baseline at L <= gate)")
+    ap.add_argument("--motif_mode", choices=["nope", "clamp_lf", "clamp_full"], default="nope",
+                    help="substitution for gated pairs: nope (pre-rotation lf), "
+                         "clamp_lf (lf dims at clamped delta0), clamp_full (all dims clamped = ReRoPE)")
     ap.add_argument("--no_cache",             action="store_true", help="use_cache=False for generation")
     ap.add_argument("--apply_chat_template",  action="store_true", help="wrap input in model chat template")
     ap.add_argument("--max_input_tokens",     type=int, default=0, help="if >0, truncate input ids to this length")
