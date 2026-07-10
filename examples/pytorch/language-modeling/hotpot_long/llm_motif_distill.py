@@ -139,13 +139,15 @@ def run(a):
     else:
         _install_rotary_capture()
 
-    # load cases
+    # load cases — filter by the file's length label; truncate token ids to a.L
+    # (label can exceed a.L when the file was built with a different tokenizer)
+    label = a.label if a.label > 0 else a.L
     cases = []
     with open(a.jsonl) as f:
         for line in f:
             if not line.strip(): continue
             r = json.loads(line)
-            if int(r.get("length", r.get("meta", {}).get("target_total_tokens", -1))) != a.L:
+            if int(r.get("length", r.get("meta", {}).get("target_total_tokens", -1))) != label:
                 continue
             inp = r.get("input", "")
             ids = tok(inp, add_special_tokens=True, truncation=False)["input_ids"]
@@ -231,6 +233,7 @@ if __name__ == "__main__":
     ap.add_argument("--model",         default="TinyLlama/TinyLlama-1.1B-Chat-v1.0")
     ap.add_argument("--jsonl",         required=True)
     ap.add_argument("--L",             type=int, default=2048)
+    ap.add_argument("--label",         type=int, default=0, help="length label to filter jsonl rows (0 = use --L)")
     ap.add_argument("--n_cases",       type=int, default=20)
     ap.add_argument("--period_cutoff", type=float, default=2048.0)
     ap.add_argument("--dtype",         default="float32", help="torch dtype: float32 / bfloat16 / float16")

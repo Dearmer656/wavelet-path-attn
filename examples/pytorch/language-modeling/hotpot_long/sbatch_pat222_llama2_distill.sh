@@ -10,6 +10,8 @@
 # PAT-222: Distill slash+sink motif from LLaMA-2-7B-Chat at L=4096 (training length).
 MODEL="${MODEL:-NousResearch/Llama-2-7b-chat-hf}"
 L="${L:-4096}"
+LABEL="${LABEL:-0}"          # length label in jsonl (0 = same as L)
+DATA_JSONL="${DATA_JSONL:-}" # override jsonl path; default ruler_eval_${L}.jsonl
 N_CASES="${N_CASES:-10}"
 
 _slack() {
@@ -36,12 +38,14 @@ OUT=${BASE}/hotpot_long/analysis_outputs/pat222/llama2${OUT_SUFFIX:+${OUT_SUFFIX
 cd "${BASE}/hotpot_long"
 mkdir -p logs "${OUT}"
 
+JSONL="${DATA_JSONL:-${BASE}/hotpot_long/data/ruler_eval_${L}.jsonl}"
 python llm_motif_distill.py \
     --model "${MODEL}" \
-    --jsonl "${BASE}/hotpot_long/data/ruler_eval_${L}.jsonl" \
+    --jsonl "${JSONL}" \
     --L "${L}" \
+    --label "${LABEL}" \
     --n_cases "${N_CASES}" \
-    --period_cutoff "${L}" \
+    --period_cutoff "${PERIOD_CUTOFF:-${L}}" \
     --dtype bfloat16 \
     --out "${OUT}"
 

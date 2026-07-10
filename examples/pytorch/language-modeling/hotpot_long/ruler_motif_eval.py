@@ -138,7 +138,7 @@ def _install_pre_rope_hook_phi(model):
 
 def patch_llama_attention(model, s_tab, v_tab, nl, nh, lf_mask_np,
                           lam=1.0, use_cache_inject=False,
-                          use_nope=True, use_bias=True):
+                          use_nope=True, use_bias=True, gate_delta=-1):
     """Patch eager_attention_forward to inject motif with NoPE-lf substitution.
 
     For low-freq RoPE dims (period > period_cutoff), we replace post-RoPE Q/K with their
@@ -155,6 +155,7 @@ def patch_llama_attention(model, s_tab, v_tab, nl, nh, lf_mask_np,
     _MOTIF_STATE["lam"]              = lam
     _MOTIF_STATE["use_cache_inject"] = use_cache_inject
     _MOTIF_STATE["use_bias"]         = use_bias
+    _MOTIF_STATE["gate_delta"]       = gate_delta
     lf_t = torch.from_numpy(lf_mask_np)
     _MOTIF_STATE["lf_f"]  = lf_t.float()          # [head_dim] float  1=low-freq
     _MOTIF_STATE["hf_f"]  = (1.0 - lf_t).float()  # [head_dim] float  1=high-freq
@@ -178,19 +179,21 @@ def patch_llama_attention(model, s_tab, v_tab, nl, nh, lf_mask_np,
 
         li    = module.layer_idx
         value_states = repeat_kv(value, module.num_key_value_groups)
+        gate_d = st.get("gate_delta", -1)
 
         # ── NoPE substitution on low-freq dims ───────────────────────────────
         # For OOD lengths, low-freq RoPE phases are broken. Replace with pre-rotation
         # values via mask multiply (avoids slow CUDA boolean scatter/gather).
         # q_use = query * hf_mask + q_pre * lf_mask  (element-wise, coalesced)
+        k_orig = repeat_kv(key, module.num_key_value_groups)
         if li in _PRE_ROPE_CACHE:
             q_pre, k_pre = _PRE_ROPE_CACHE[li]
             q_use     = query * hf_f + q_pre * lf_f                                   # [B,nh,T,hd]
             k_pre_exp = k_pre.repeat_interleave(module.num_key_value_groups, dim=1)    # [B,nh,T,hd]
-            k_use     = repeat_kv(key, module.num_key_value_groups) * hf_f + k_pre_exp * lf_f
+            k_use     = k_orig * hf_f + k_pre_exp * lf_f
         else:
             q_use = query
-            k_use = repeat_kv(key, module.num_key_value_groups)
+            k_use = k_orig
         # ────────────────────────────────────────────────────────────────────
 
         q_len = q_use.shape[-2]
@@ -198,6 +201,21 @@ def patch_llama_attention(model, s_tab, v_tab, nl, nh, lf_mask_np,
         dev, dt = query.device, query.dtype
 
         attn_weights = torch.matmul(q_use, k_use.transpose(2, 3)) * scaling
+
+        # ── δ-gated substitution ─────────────────────────────────────────────
+        # Only pairs with relative offset δ > gate_delta use the substituted logits;
+        # in-range pairs keep true RoPE. At L ≤ gate_delta this is an exact identity
+        # with baseline (G1 passes by construction).
+        gate_mask = None
+        if gate_d >= 0:
+            qpos = torch.arange(k_len - q_len, k_len, device=dev)
+            kpos = torch.arange(k_len, device=dev)
+            gate_mask = (qpos.unsqueeze(1) - kpos.unsqueeze(0)) > gate_d   # [q_len,k_len] bool
+            if (q_use is not query) or (k_use is not k_orig):
+                A_orig = torch.matmul(query, k_orig.transpose(2, 3)) * scaling
+                attn_weights = torch.where(gate_mask, attn_weights, A_orig)
+                del A_orig
+        # ────────────────────────────────────────────────────────────────────
 
         # ── motif injection ──────────────────────────────────────────────────
         if st.get("use_bias", True):
@@ -208,6 +226,8 @@ def patch_llama_attention(model, s_tab, v_tab, nl, nh, lf_mask_np,
                 bias = _build_bias_matrix(s_, v_, nl_, nh_, li, k_len, dev, dt, lam_)
                 if q_len < k_len:
                     bias = bias[:, :, k_len - q_len:, :]
+            if gate_mask is not None:
+                bias = bias * gate_mask.to(dt)   # bias only on gated (OOD-δ) pairs
             attn_weights.add_(bias)  # in-place: no extra [1,nh,T,T]
             del bias
         # ────────────────────────────────────────────────────────────────────
@@ -366,7 +386,8 @@ def run(a):
             patch_llama_attention(model, s_tab, v_tab, nl, nh, lf_mask_np,
                                   lam=a.lam, use_cache_inject=not a.no_cache,
                                   use_nope=not a.motif_no_nope,
-                                  use_bias=not a.motif_no_bias)
+                                  use_bias=not a.motif_no_bias,
+                                  gate_delta=a.motif_gate_delta)
         if rank == 0:
             n_lf = int(lf_mask_np.sum())
             arch = "phi" if is_phi else "llama"
@@ -458,9 +479,10 @@ def run(a):
             tag = "motif"
             if a.motif_no_nope: tag += "-nonope"
             if a.motif_no_bias: tag += "-nobias"
+            if a.motif_gate_delta >= 0: tag += f"-gate{a.motif_gate_delta}"
             if a.lam != 1.0:    tag += f"-lam{a.lam:g}"
         else:
-            tag = "baseline"
+            tag = "baseline" + ("-nocache" if a.no_cache else "")
         out_json = os.path.join(a.out, f"ruler_{tag}_L{a.L}.json")
         with open(out_json, "w") as f:
             json.dump({"acc": float(acc_all), "L": a.L, "n": len(records),
@@ -480,6 +502,9 @@ if __name__ == "__main__":
     ap.add_argument("--lam",           type=float, default=1.0)
     ap.add_argument("--motif_no_nope", action="store_true", help="ablation: disable NoPE-lf substitution (bias only)")
     ap.add_argument("--motif_no_bias", action="store_true", help="ablation: disable motif bias (NoPE-lf only)")
+    ap.add_argument("--motif_gate_delta", type=int, default=-1,
+                    help=">=0: apply substitution/bias only to pairs with offset delta > this "
+                         "(position-gated; identity with baseline at L <= gate)")
     ap.add_argument("--no_cache",             action="store_true", help="use_cache=False for generation")
     ap.add_argument("--apply_chat_template",  action="store_true", help="wrap input in model chat template")
     ap.add_argument("--max_input_tokens",     type=int, default=0, help="if >0, truncate input ids to this length")
