@@ -199,29 +199,33 @@ def main() -> None:
     eval_8192_rows = build_split(
         base_rows, tok, out_len_label=8192, target_tokens=8192, out_count=args.eval_count, seed=45
     )
+    # Mild-OOD lengths (1.1x-1.5x of LLaMA-2's 4096 window): baseline partially degrades
+    # but attention has not collapsed — the regime where motif injection can plausibly help.
+    eval_4608_rows = build_split(
+        base_rows, tok, out_len_label=4608, target_tokens=4608, out_count=args.eval_count, seed=47
+    )
+    eval_5120_rows = build_split(
+        base_rows, tok, out_len_label=5120, target_tokens=5120, out_count=args.eval_count, seed=48
+    )
+    eval_6144_rows = build_split(
+        base_rows, tok, out_len_label=6144, target_tokens=6144, out_count=args.eval_count, seed=49
+    )
 
-    train_path = args.outdir / "ruler_train_512.jsonl"
-    eval_2048_path = args.outdir / "ruler_eval_2048.jsonl"
-    eval_4080_path = args.outdir / "ruler_eval_4080.jsonl"
-    eval_4096_path = args.outdir / "ruler_eval_4096.jsonl"
-    eval_8192_path = args.outdir / "ruler_eval_8192.jsonl"
-
-    write_jsonl(train_path, train_rows)
-    write_jsonl(eval_2048_path, eval_2048_rows)
-    write_jsonl(eval_4080_path, eval_4080_rows)
-    write_jsonl(eval_4096_path, eval_4096_rows)
-    write_jsonl(eval_8192_path, eval_8192_rows)
-
-    summarize("train_512", train_rows, tok)
-    summarize("eval_2048", eval_2048_rows, tok)
-    summarize("eval_4080", eval_4080_rows, tok)
-    summarize("eval_4096", eval_4096_rows, tok)
-    summarize("eval_8192", eval_8192_rows, tok)
-    print(f"wrote: {train_path}")
-    print(f"wrote: {eval_2048_path}")
-    print(f"wrote: {eval_4080_path}")
-    print(f"wrote: {eval_4096_path}")
-    print(f"wrote: {eval_8192_path}")
+    splits = [
+        ("ruler_train_512.jsonl", "train_512", train_rows),
+        ("ruler_eval_2048.jsonl", "eval_2048", eval_2048_rows),
+        ("ruler_eval_4080.jsonl", "eval_4080", eval_4080_rows),
+        ("ruler_eval_4096.jsonl", "eval_4096", eval_4096_rows),
+        ("ruler_eval_4608.jsonl", "eval_4608", eval_4608_rows),
+        ("ruler_eval_5120.jsonl", "eval_5120", eval_5120_rows),
+        ("ruler_eval_6144.jsonl", "eval_6144", eval_6144_rows),
+        ("ruler_eval_8192.jsonl", "eval_8192", eval_8192_rows),
+    ]
+    for fname, label, rows in splits:
+        path = args.outdir / fname
+        write_jsonl(path, rows)
+        summarize(label, rows, tok)
+        print(f"wrote: {path}")
 
 
 if __name__ == "__main__":
