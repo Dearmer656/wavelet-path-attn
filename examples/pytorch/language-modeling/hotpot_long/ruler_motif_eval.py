@@ -139,7 +139,7 @@ def _install_pre_rope_hook_phi(model):
 def patch_llama_attention(model, s_tab, v_tab, nl, nh, lf_mask_np,
                           lam=1.0, use_cache_inject=False,
                           use_nope=True, use_bias=True, gate_delta=-1,
-                          mode="nope"):
+                          mode="nope", compress_alpha=0.25):
     """Patch eager_attention_forward to inject motif with NoPE-lf substitution.
 
     For low-freq RoPE dims (period > period_cutoff), we replace post-RoPE Q/K with their
@@ -158,6 +158,13 @@ def patch_llama_attention(model, s_tab, v_tab, nl, nh, lf_mask_np,
     _MOTIF_STATE["use_bias"]         = use_bias
     _MOTIF_STATE["gate_delta"]       = gate_delta
     _MOTIF_STATE["mode"]             = mode
+    if mode == "compress":
+        # δ' = δ0 + α(δ−δ0) for gated pairs — order-preserving compression of far
+        # distances into the trained range (Self-Extend-style, continuous variant).
+        # Separable: rotate q at position α·i + δ0(1−α), k at position α·j.
+        assert gate_delta >= 0, "compress mode requires --motif_gate_delta"
+        _MOTIF_STATE["inv_freq"] = model.model.rotary_emb.inv_freq.detach().float()
+        _MOTIF_STATE["alpha"]    = float(compress_alpha)
     if mode in ("clamp_lf", "clamp_full"):
         # cos/sin of the clamped relative distance δ0 for every rotary dim.
         # For gated pairs the lf (or all) dims see phase θ_m·δ0 — the largest
@@ -205,16 +212,31 @@ def patch_llama_attention(model, s_tab, v_tab, nl, nh, lf_mask_np,
             k_pre_exp = k_pre.repeat_interleave(module.num_key_value_groups, dim=1)    # [B,nh,T,hd]
             if mode_ == "nope":
                 q_sub = q_pre
+                k_sub = k_pre_exp
+            elif mode_ == "compress":
+                invf  = st["inv_freq"].to(query.device)
+                alpha = st["alpha"]; d0 = float(st["gate_delta"])
+                T_k   = k_pre_exp.shape[-2]
+                t     = torch.arange(T_k, device=query.device, dtype=torch.float32)
+                aq    = (alpha * t + d0 * (1.0 - alpha))[:, None] * invf[None, :]
+                ak    = (alpha * t)[:, None] * invf[None, :]
+                aq    = torch.cat([aq, aq], -1); ak = torch.cat([ak, ak], -1)   # [T,hd]
+                cq, sq = aq.cos().to(query.dtype), aq.sin().to(query.dtype)
+                ck, sk = ak.cos().to(query.dtype), ak.sin().to(query.dtype)
+                q_pre_full = q_pre[:, :, -query.shape[-2]:, :] if q_pre.shape[-2] != query.shape[-2] else q_pre
+                q_sub = q_pre_full * cq[-query.shape[-2]:] + rotate_half(q_pre_full) * sq[-query.shape[-2]:]
+                k_sub = k_pre_exp * ck + rotate_half(k_pre_exp) * sk
             else:
                 cos = st["cos_d0"].to(device=query.device, dtype=query.dtype)
                 sin = st["sin_d0"].to(device=query.device, dtype=query.dtype)
                 q_sub = q_pre * cos + rotate_half(q_pre) * sin   # q rotated by δ0; k unrotated
+                k_sub = k_pre_exp
             if mode_ == "clamp_full":
                 q_use = q_sub
-                k_use = k_pre_exp
+                k_use = k_sub
             else:
                 q_use = query * hf_f + q_sub * lf_f                                   # [B,nh,T,hd]
-                k_use = k_orig * hf_f + k_pre_exp * lf_f
+                k_use = k_orig * hf_f + k_sub * lf_f
         else:
             q_use = query
             k_use = k_orig
@@ -431,7 +453,8 @@ def run(a):
                                   use_nope=not a.motif_no_nope,
                                   use_bias=not a.motif_no_bias,
                                   gate_delta=a.motif_gate_delta,
-                                  mode=a.motif_mode)
+                                  mode=a.motif_mode,
+                                  compress_alpha=a.compress_alpha)
         if rank == 0:
             n_lf = int(lf_mask_np.sum())
             arch = "phi" if is_phi else "llama"
@@ -526,6 +549,7 @@ def run(a):
         if a.motif_npz:
             tag = "motif"
             if a.motif_mode != "nope": tag += f"-{a.motif_mode}"
+            if a.motif_mode == "compress": tag += f"-a{a.compress_alpha:g}"
             if a.clamp_period_cutoff > 0: tag += f"-pc{int(a.clamp_period_cutoff)}"
             if a.motif_no_nope: tag += "-nonope"
             if a.motif_no_bias: tag += "-nobias"
@@ -555,9 +579,12 @@ if __name__ == "__main__":
     ap.add_argument("--motif_gate_delta", type=int, default=-1,
                     help=">=0: apply substitution/bias only to pairs with offset delta > this "
                          "(position-gated; identity with baseline at L <= gate)")
-    ap.add_argument("--motif_mode", choices=["nope", "clamp_lf", "clamp_full"], default="nope",
+    ap.add_argument("--motif_mode", choices=["nope", "clamp_lf", "clamp_full", "compress"], default="nope",
                     help="substitution for gated pairs: nope (pre-rotation lf), "
-                         "clamp_lf (lf dims at clamped delta0), clamp_full (all dims clamped = ReRoPE)")
+                         "clamp_lf (lf dims at clamped delta0), clamp_full (all dims clamped = ReRoPE), "
+                         "compress (delta' = d0 + a(delta-d0), Self-Extend-style; dims via --clamp_period_cutoff)")
+    ap.add_argument("--compress_alpha", type=float, default=0.25,
+                    help="compression slope for --motif_mode compress")
     ap.add_argument("--clamp_period_cutoff", type=float, default=0.0,
                     help=">0: recompute lf mask as dims with RoPE period > this, in the correct "
                          "HF-Llama rotate_half layout (overrides npz dmask). Enables cutoff sweep.")
