@@ -374,11 +374,15 @@ def ruler_score(pred, gold_list):
 def run(a):
     rank, world = 0, 1
     if dist.is_available() and int(os.environ.get("WORLD_SIZE", 1)) > 1:
-        dist.init_process_group("nccl")
+        from datetime import timedelta
+        # long timeout: at L=8192 rank shards finish hours apart before the final gather
+        dist.init_process_group("nccl", timeout=timedelta(hours=6))
         rank = dist.get_rank(); world = dist.get_world_size()
     device = torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu")
     if torch.cuda.is_available():
         torch.cuda.set_device(rank)
+    if world > 1:
+        dist.barrier(device_ids=[rank])   # eagerly create NCCL comm while ranks are in sync
 
     if rank == 0:
         print(f"[ruler-eval] model={a.model} L={a.L} world={world} motif_npz={a.motif_npz}", flush=True)
