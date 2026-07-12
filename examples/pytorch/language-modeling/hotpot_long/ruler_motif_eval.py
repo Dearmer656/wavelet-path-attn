@@ -158,7 +158,7 @@ def patch_llama_attention(model, s_tab, v_tab, nl, nh, lf_mask_np,
     _MOTIF_STATE["use_bias"]         = use_bias
     _MOTIF_STATE["gate_delta"]       = gate_delta
     _MOTIF_STATE["mode"]             = mode
-    if mode == "compress":
+    if mode in ("compress", "hybrid"):
         # δ' = δ0 + α(δ−δ0) for gated pairs — order-preserving compression of far
         # distances into the trained range (Self-Extend-style, continuous variant).
         # Separable: rotate q at position α·i + δ0(1−α), k at position α·j.
@@ -213,7 +213,7 @@ def patch_llama_attention(model, s_tab, v_tab, nl, nh, lf_mask_np,
             if mode_ == "nope":
                 q_sub = q_pre
                 k_sub = k_pre_exp
-            elif mode_ == "compress":
+            elif mode_ in ("compress", "hybrid"):
                 invf  = st["inv_freq"].to(query.device)
                 alpha = st["alpha"]; d0 = float(st["gate_delta"])
                 T_k   = k_pre_exp.shape[-2]
@@ -234,6 +234,11 @@ def patch_llama_attention(model, s_tab, v_tab, nl, nh, lf_mask_np,
             if mode_ == "clamp_full":
                 q_use = q_sub
                 k_use = k_sub
+            elif mode_ == "hybrid":
+                # mechanism-derived: content-carrying (non-lf) dims get order-preserving
+                # compression; lf dims (static prior, per 2x2 finding) get NoPE + motif bias
+                q_use = q_sub * hf_f + q_pre * lf_f
+                k_use = k_sub * hf_f + k_pre_exp * lf_f
             else:
                 q_use = query * hf_f + q_sub * lf_f                                   # [B,nh,T,hd]
                 k_use = k_orig * hf_f + k_sub * lf_f
@@ -549,7 +554,7 @@ def run(a):
         if a.motif_npz:
             tag = "motif"
             if a.motif_mode != "nope": tag += f"-{a.motif_mode}"
-            if a.motif_mode == "compress": tag += f"-a{a.compress_alpha:g}"
+            if a.motif_mode in ("compress", "hybrid"): tag += f"-a{a.compress_alpha:g}"
             if a.clamp_period_cutoff > 0: tag += f"-pc{int(a.clamp_period_cutoff)}"
             if a.motif_no_nope: tag += "-nonope"
             if a.motif_no_bias: tag += "-nobias"
@@ -579,7 +584,7 @@ if __name__ == "__main__":
     ap.add_argument("--motif_gate_delta", type=int, default=-1,
                     help=">=0: apply substitution/bias only to pairs with offset delta > this "
                          "(position-gated; identity with baseline at L <= gate)")
-    ap.add_argument("--motif_mode", choices=["nope", "clamp_lf", "clamp_full", "compress"], default="nope",
+    ap.add_argument("--motif_mode", choices=["nope", "clamp_lf", "clamp_full", "compress", "hybrid"], default="nope",
                     help="substitution for gated pairs: nope (pre-rotation lf), "
                          "clamp_lf (lf dims at clamped delta0), clamp_full (all dims clamped = ReRoPE), "
                          "compress (delta' = d0 + a(delta-d0), Self-Extend-style; dims via --clamp_period_cutoff)")
