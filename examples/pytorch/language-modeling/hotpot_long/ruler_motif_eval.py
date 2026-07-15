@@ -272,9 +272,12 @@ def patch_llama_attention(model, s_tab, v_tab, nl, nh, lf_mask_np,
 
         # ── motif injection ──────────────────────────────────────────────────
         if st.get("use_bias", True):
-            if mode_ == "compress_motif" and gate_d >= 0:
-                # Coherent bias: s indexed by compressed δ' so both q/k and bias
-                # describe distance in the same compressed coordinate system.
+            if mode_ in ("compress_motif", "hybrid") and gate_d >= 0:
+                # Coherent bias: index s by compressed δ' so bias and q/k describe
+                # distance in the same coordinate system (fixes original hybrid failure
+                # where q/k used δ' but bias used real δ → contradictory).
+                # compress_motif: full-dim motif + all-compress (q_use=q_sub all dims).
+                # hybrid:         lf-only motif + hf-compress + lf-NoPE (no double-count).
                 base_  = li * nh_
                 L0_m   = s_.shape[1]
                 alpha_ = st["alpha"]
