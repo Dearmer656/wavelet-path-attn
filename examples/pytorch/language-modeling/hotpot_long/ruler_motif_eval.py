@@ -158,11 +158,11 @@ def patch_llama_attention(model, s_tab, v_tab, nl, nh, lf_mask_np,
     _MOTIF_STATE["use_bias"]         = use_bias
     _MOTIF_STATE["gate_delta"]       = gate_delta
     _MOTIF_STATE["mode"]             = mode
-    if mode in ("compress", "hybrid"):
+    if mode in ("compress", "hybrid", "compress_motif"):
         # δ' = δ0 + α(δ−δ0) for gated pairs — order-preserving compression of far
         # distances into the trained range (Self-Extend-style, continuous variant).
         # Separable: rotate q at position α·i + δ0(1−α), k at position α·j.
-        assert gate_delta >= 0, "compress mode requires --motif_gate_delta"
+        assert gate_delta >= 0, "compress/compress_motif mode requires --motif_gate_delta"
         _MOTIF_STATE["inv_freq"] = model.model.rotary_emb.inv_freq.detach().float()
         _MOTIF_STATE["alpha"]    = float(compress_alpha)
     if mode in ("clamp_lf", "clamp_full"):
@@ -180,7 +180,8 @@ def patch_llama_attention(model, s_tab, v_tab, nl, nh, lf_mask_np,
 
     # NoPE-lf substitution only active when the pre-RoPE hook is installed;
     # skipping the hook = _PRE_ROPE_CACHE stays empty = substitution branch never fires.
-    if use_nope:
+    # compress/compress_motif also need the hook to obtain pre-rotation q/k for compression.
+    if use_nope or mode in ("compress", "hybrid", "compress_motif"):
         _install_pre_rope_hook(model)
 
     import transformers.models.llama.modeling_llama as _LM
@@ -213,7 +214,7 @@ def patch_llama_attention(model, s_tab, v_tab, nl, nh, lf_mask_np,
             if mode_ == "nope":
                 q_sub = q_pre
                 k_sub = k_pre_exp
-            elif mode_ in ("compress", "hybrid"):
+            elif mode_ in ("compress", "hybrid", "compress_motif"):
                 invf  = st["inv_freq"].to(query.device)
                 alpha = st["alpha"]; d0 = float(st["gate_delta"])
                 T_k   = k_pre_exp.shape[-2]
@@ -231,7 +232,8 @@ def patch_llama_attention(model, s_tab, v_tab, nl, nh, lf_mask_np,
                 sin = st["sin_d0"].to(device=query.device, dtype=query.dtype)
                 q_sub = q_pre * cos + rotate_half(q_pre) * sin   # q rotated by δ0; k unrotated
                 k_sub = k_pre_exp
-            if mode_ == "clamp_full":
+            if mode_ in ("clamp_full", "compress_motif"):
+                # compress_motif: Self-Extend compression on ALL dims; bias uses compressed δ'
                 q_use = q_sub
                 k_use = k_sub
             elif mode_ == "hybrid":
@@ -270,17 +272,49 @@ def patch_llama_attention(model, s_tab, v_tab, nl, nh, lf_mask_np,
 
         # ── motif injection ──────────────────────────────────────────────────
         if st.get("use_bias", True):
-            if st["use_cache_inject"] and q_len == 1 and k_len > 1:
+            if mode_ == "compress_motif" and gate_d >= 0:
+                # Coherent bias: s indexed by compressed δ' so both q/k and bias
+                # describe distance in the same compressed coordinate system.
+                base_  = li * nh_
+                L0_m   = s_.shape[1]
+                alpha_ = st["alpha"]
+                iq = torch.arange(k_len - q_len, k_len, device=dev)
+                ik = torch.arange(k_len, device=dev)
+                off_raw = (iq.unsqueeze(1) - ik.unsqueeze(0)).clamp(0, L0_m - 1)  # [q_len,k_len]
+                off_c = torch.where(
+                    off_raw > gate_d,
+                    (gate_d + alpha_ * (off_raw.float() - gate_d)).long().clamp(0, L0_m - 1),
+                    off_raw
+                )  # [q_len,k_len] compressed offsets
+                s_np_c = np.stack([_extend_s_np(s_[base_+h], L0_m, L0_m) for h in range(nh_)])
+                v_np_c = np.stack([_extend_v_np(v_[base_+h], L0_m, L0_m) for h in range(nh_)])
+                s_t_c  = torch.from_numpy(s_np_c).to(device=dev, dtype=dt)  # [nh,L0_m]
+                v_t_c  = torch.from_numpy(v_np_c).to(device=dev, dtype=dt)  # [nh,L0_m]
+                bias_c = s_t_c[:, off_c]                                      # [nh,q_len,k_len]
+                del s_t_c
+                jk = ik.clamp(0, L0_m - 1)
+                bias_c.add_(v_t_c[:, jk].unsqueeze(1))  # v indexed by key pos j
+                del v_t_c, jk, off_c, off_raw
+                if lam_ != 1.0: bias_c.mul_(lam_)
+                if gate_mask is not None:
+                    bias_c = bias_c * gate_mask.to(dt)
+                attn_weights.add_(bias_c.unsqueeze(0))
+                del bias_c
+            elif st["use_cache_inject"] and q_len == 1 and k_len > 1:
                 pos  = k_len - 1
                 bias = _build_bias_row(s_, v_, nl_, nh_, li, pos, k_len, dev, dt, lam_)
+                if gate_mask is not None:
+                    bias = bias * gate_mask.to(dt)
+                attn_weights.add_(bias)
+                del bias
             else:
                 bias = _build_bias_matrix(s_, v_, nl_, nh_, li, k_len, dev, dt, lam_)
                 if q_len < k_len:
                     bias = bias[:, :, k_len - q_len:, :]
-            if gate_mask is not None:
-                bias = bias * gate_mask.to(dt)   # bias only on gated (OOD-δ) pairs
-            attn_weights.add_(bias)  # in-place: no extra [1,nh,T,T]
-            del bias
+                if gate_mask is not None:
+                    bias = bias * gate_mask.to(dt)   # bias only on gated (OOD-δ) pairs
+                attn_weights.add_(bias)  # in-place: no extra [1,nh,T,T]
+                del bias
         # ────────────────────────────────────────────────────────────────────
 
         if attention_mask is not None:
@@ -554,7 +588,7 @@ def run(a):
         if a.motif_npz:
             tag = "motif"
             if a.motif_mode != "nope": tag += f"-{a.motif_mode}"
-            if a.motif_mode in ("compress", "hybrid"): tag += f"-a{a.compress_alpha:g}"
+            if a.motif_mode in ("compress", "hybrid", "compress_motif"): tag += f"-a{a.compress_alpha:g}"
             if a.clamp_period_cutoff > 0: tag += f"-pc{int(a.clamp_period_cutoff)}"
             if a.motif_no_nope: tag += "-nonope"
             if a.motif_no_bias: tag += "-nobias"
@@ -584,10 +618,11 @@ if __name__ == "__main__":
     ap.add_argument("--motif_gate_delta", type=int, default=-1,
                     help=">=0: apply substitution/bias only to pairs with offset delta > this "
                          "(position-gated; identity with baseline at L <= gate)")
-    ap.add_argument("--motif_mode", choices=["nope", "clamp_lf", "clamp_full", "compress", "hybrid"], default="nope",
+    ap.add_argument("--motif_mode", choices=["nope", "clamp_lf", "clamp_full", "compress", "hybrid", "compress_motif"], default="nope",
                     help="substitution for gated pairs: nope (pre-rotation lf), "
                          "clamp_lf (lf dims at clamped delta0), clamp_full (all dims clamped = ReRoPE), "
-                         "compress (delta' = d0 + a(delta-d0), Self-Extend-style; dims via --clamp_period_cutoff)")
+                         "compress (delta' = d0 + a(delta-d0), Self-Extend-style; dims via --clamp_period_cutoff), "
+                         "compress_motif (all dims Self-Extend + bias indexed by compressed delta')")
     ap.add_argument("--compress_alpha", type=float, default=0.25,
                     help="compression slope for --motif_mode compress")
     ap.add_argument("--clamp_period_cutoff", type=float, default=0.0,
