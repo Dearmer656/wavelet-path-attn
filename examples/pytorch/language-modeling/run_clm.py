@@ -51,6 +51,12 @@ import torch.distributed as dist
 from datasets import IterableDataset, IterableDatasetDict, load_dataset, DatasetDict, concatenate_datasets, load_from_disk, interleave_datasets
 import transformers
 from typing import List
+# PAT-226: register fla model families (mamba2 etc.) with HF Auto classes so
+# --model_type mamba2 resolves through CONFIG_MAPPING / AutoModelForCausalLM.
+try:
+    import fla.models  # noqa: F401
+except Exception as _fla_models_err:  # pragma: no cover
+    print(f"[PAT-226] fla.models import skipped: {_fla_models_err}", flush=True)
 from transformers import (
     CONFIG_MAPPING,
     MODEL_FOR_CAUSAL_LM_MAPPING,
