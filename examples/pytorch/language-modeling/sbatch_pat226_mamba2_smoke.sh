@@ -46,11 +46,11 @@ import torch, json
 from transformers import AutoConfig, AutoModelForCausalLM
 import fla.models  # noqa
 ckpt = "/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/pat226_mamba2/smoke/checkpoint-30"
-model = AutoModelForCausalLM.from_pretrained(ckpt)
+model = AutoModelForCausalLM.from_pretrained(ckpt).cuda()
 n = sum(p.numel() for p in model.parameters())
 print(f"[PAT-226] mamba2 param count: {n} ({n/1e6:.1f}M)")
 assert 120e6 < n < 140e6, "param count outside 130M class"
-ids = torch.randint(100, 5000, (1, 256))
+ids = torch.randint(100, 5000, (1, 256)).cuda()
 out = model(ids, labels=ids)
 assert torch.isfinite(out.loss), "non-finite loss on reload"
 print(f"[PAT-226] reload forward loss: {float(out.loss):.4f}")
