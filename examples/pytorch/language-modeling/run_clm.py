@@ -6069,7 +6069,9 @@ def main():
         # pdb.set_trace()
         def preprocess_logits_for_metrics(logits, labels):
             if isinstance(logits, tuple):
-                logits = logits[0]
+                # auxiliary_loss (scalar 0-D) is inserted before logits in the ModelOutput dict;
+                # find the first 3-D tensor (batch × seq_len × vocab) to avoid picking it up.
+                logits = next((t for t in logits if t is not None and t.dim() == 3), logits[0])
             return logits.argmax(dim=-1)
         
         #### hotpot_qa setting ########
