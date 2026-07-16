@@ -67,7 +67,10 @@ def load_model(config_overrides=None, from_ckpt=True):
         model = AutoModelForCausalLM.from_pretrained(A4_CKPT, config=config)
     else:
         model = AutoModelForCausalLM.from_config(config)
-    tok = AutoTokenizer.from_pretrained(A4_CKPT)
+    # use_fast=False: the env's tokenizers lib cannot parse this checkpoint's
+    # tokenizer.json (untagged-enum ModelWrapper error); slow GPT2 tokenizer
+    # loads from vocab.json/merges.txt instead.
+    tok = AutoTokenizer.from_pretrained(A4_CKPT, use_fast=False)
     return model.cuda().eval(), tok
 
 
