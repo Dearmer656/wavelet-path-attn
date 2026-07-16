@@ -60,6 +60,14 @@ def load_model(config_overrides=None, from_ckpt=True):
     from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
     config = AutoConfig.from_pretrained(A4_CKPT)
+    # AutoConfig pops `attn_implementation` into the private _attn_implementation;
+    # GPT2Block checks the PUBLIC attribute to enable the PaTH adapter (same
+    # workaround as eval_hotpot_long.py) — without this the model silently
+    # falls back to vanilla GPT2Attention and drops all attn.core.* weights.
+    with open(f"{A4_CKPT}/config.json") as fh:
+        raw = json.load(fh)
+    if "attn_implementation" in raw:
+        config.attn_implementation = raw["attn_implementation"]
     if config_overrides:
         for k, v in config_overrides.items():
             setattr(config, k, v)
