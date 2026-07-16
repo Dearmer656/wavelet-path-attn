@@ -36,7 +36,7 @@ python ./run_clm.py \
   --learning_rate 1e-4 --weight_decay 0.0 \
   --per_device_train_batch_size 4 --per_device_eval_batch_size 4 \
   --block_size 512 --dataset_name wikitext --dataset_config_name wikitext-103-raw-v1 \
-  --do_train --max_steps 30 --save_steps 30 \
+  --do_train --max_steps 30 --save_steps 30 --save_safetensors False \
   --logging_steps 10 \
   --output_dir "${RUN_OUT}" --overwrite_output_dir \
   --seed 42
