@@ -4366,6 +4366,11 @@ def main():
     config.wavelet_ctx_feat_mode = cfg_str(
         cfg, "wavelet_ctx_feat_mode", str(getattr(config, "wavelet_ctx_feat_mode", "q_meanH"))
     )
+    # PAT-225: scale cardinality S for the ctxscale wavelet branch (default 8
+    # = production; router_band_num does not control this branch).
+    config.wavelet_ctxscale_k = cfg_int(
+        cfg, "wavelet_ctxscale_k", int(getattr(config, "wavelet_ctxscale_k", 8))
+    )
     config.wavelet_ctx_feat_rms_eps = cfg_float(
         cfg, "wavelet_ctx_feat_rms_eps", float(getattr(config, "wavelet_ctx_feat_rms_eps", 1e-6))
     )
