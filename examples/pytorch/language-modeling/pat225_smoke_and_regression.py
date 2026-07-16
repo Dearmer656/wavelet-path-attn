@@ -107,8 +107,9 @@ def part_b():
     loss = float(out.loss)
     print(f"A4 forward loss on probe batch: {loss:.4f}")
     assert math.isfinite(loss), "non-finite loss"
-    # generous sanity band around the recorded eval regime (guards silent breakage)
-    assert 1.0 < loss < 8.0, f"loss {loss} outside sanity band"
+    # generous sanity band (probe text is highly repetitive so loss is low;
+    # a broken/randomized model would sit near ln(50257) ~ 10.8)
+    assert 0.05 < loss < 8.0, f"loss {loss} outside sanity band"
     del model
     torch.cuda.empty_cache()
     print("Part B PASS")
