@@ -222,7 +222,13 @@ def main():
             raw_config = json.load(f)
         attn_impl = raw_config.get("attn_implementation")
         if attn_impl:
-            config._attn_implementation = attn_impl
+            # Public attribute drives GPT2Block's PaTH adapter selection (same
+            # convention as run_clm.py). The private _attn_implementation must
+            # stay a stock value: modeling_utils validates it at from_pretrained
+            # time and rejects "path_attn".
+            config.attn_implementation = attn_impl
+            if attn_impl not in ("eager", "sdpa"):
+                config._attn_implementation = "eager"
     if args.cfg_path:
         cfg = read_kv_config(args.cfg_path)
         added, overridden, skipped = apply_kv_to_hf_config(config, cfg)
