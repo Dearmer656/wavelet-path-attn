@@ -132,7 +132,11 @@ def render_doc(title: str, sentences: list[str]) -> str:
 
 def render_input(question: str, context: list[list]) -> str:
     ctx = "".join(render_doc(t, s) for t, s in context)
-    return f"Question: {question}\n\nContext:\n{ctx}Answer:"
+    # Must match run_clm.py's training format (hotpot_question_position default
+    # "after"/"later"): Context first, Question after, then "Answer:". The old
+    # Question-first template is out-of-distribution for these checkpoints and
+    # collapses generation F1 to ~0.
+    return f"Context:\n{ctx}\nQuestion: {question}\nAnswer:"
 
 
 # ---------------------------------------------------------------------------
@@ -229,6 +233,10 @@ def main():
             config.attn_implementation = attn_impl
             if attn_impl not in ("eager", "sdpa"):
                 config._attn_implementation = "eager"
+    # Disable training-time wavelet monitors during generation: they run every
+    # `log_every` forward calls, and generate() advances one forward per new
+    # token — the attn-prob stats then allocate >1 GiB at L4096 (OOM on 24 GB).
+    config.wavelet_logit_bias_log_every = 10**9
     if args.cfg_path:
         cfg = read_kv_config(args.cfg_path)
         added, overridden, skipped = apply_kv_to_hf_config(config, cfg)
