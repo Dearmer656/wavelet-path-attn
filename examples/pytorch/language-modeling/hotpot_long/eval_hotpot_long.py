@@ -237,6 +237,10 @@ def main():
     # `log_every` forward calls, and generate() advances one forward per new
     # token — the attn-prob stats then allocate >1 GiB at L4096 (OOM on 24 GB).
     config.wavelet_logit_bias_log_every = 10**9
+    # eval_log_once=True fires the ctxscale monitor unconditionally on the
+    # FIRST eval forward (bypassing log_every) — that alone allocates >1 GiB
+    # of attention-prob stats at L4096 and OOMs 24 GB cards during generate.
+    config.wavelet_ctxscale_eval_log_once = False
     if args.cfg_path:
         cfg = read_kv_config(args.cfg_path)
         added, overridden, skipped = apply_kv_to_hf_config(config, cfg)
