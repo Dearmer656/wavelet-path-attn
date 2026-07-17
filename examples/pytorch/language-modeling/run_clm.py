@@ -4377,6 +4377,10 @@ def main():
     config.wavelet_ctxscale_k = cfg_int(
         cfg, "wavelet_ctxscale_k", int(getattr(config, "wavelet_ctxscale_k", 8))
     )
+    # PAT-225 mechanism probe: inference-time per-scale knockout indices.
+    config.wavelet_ctxscale_scale_mask = cfg_str(
+        cfg, "wavelet_ctxscale_scale_mask", str(getattr(config, "wavelet_ctxscale_scale_mask", ""))
+    )
     config.wavelet_ctx_feat_rms_eps = cfg_float(
         cfg, "wavelet_ctx_feat_rms_eps", float(getattr(config, "wavelet_ctx_feat_rms_eps", 1e-6))
     )
