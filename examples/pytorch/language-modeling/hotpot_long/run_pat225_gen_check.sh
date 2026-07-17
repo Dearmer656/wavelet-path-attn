@@ -17,6 +17,7 @@ set -euxo pipefail
 CHECKPOINT="${1:?CHECKPOINT required}"
 NAME="${2:?NAME required}"
 CFG_PATH="${3:?CFG_PATH required}"
+GEN_BS="${4:-4}"
 
 LM=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling
 HL="${LM}/hotpot_long"
@@ -32,7 +33,7 @@ ${PYTHON} "${HL}/eval_hotpot_long.py" \
     --hotpot-long-jsonl "${HL}/data/hotpot_long_dev_uniform.jsonl" \
     --tokenizer gpt2 \
     --output-dir "${OUT}" \
-    --batch-size 4 \
+    --batch-size "${GEN_BS}" \
     --target-lengths 512 4096 \
     --max-new-tokens 32 \
     --max-examples 1000 \
