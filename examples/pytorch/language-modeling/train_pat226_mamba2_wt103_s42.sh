@@ -40,8 +40,7 @@ python -m torch.distributed.run --nproc_per_node=4 --master_port=${MASTER_PORT} 
   --model_type mamba2 --tokenizer_name gpt2 \
   --config_overrides "hidden_size=768,num_hidden_layers=24,state_size=128,expand=2,head_dim=64,num_heads=24,vocab_size=50257,tie_word_embeddings=True,bos_token_id=50256,eos_token_id=50256,pad_token_id=50256" \
   --learning_rate 1e-4 --weight_decay 0.0 \
-  --per_device_train_batch_size 8 --per_device_eval_batch_size 8 \
-  --gradient_accumulation_steps 2 \
+  --per_device_train_batch_size 16 --per_device_eval_batch_size 16 \
   --block_size 512 --dataset_name wikitext --dataset_config_name wikitext-103-raw-v1 \
   --do_train --do_eval --eval_strategy steps --eval_steps 2500 \
   --logging_dir "${RUN_OUT}/train_log" --logging_steps 500 \
