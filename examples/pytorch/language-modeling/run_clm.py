@@ -4381,6 +4381,10 @@ def main():
     config.wavelet_ctxscale_scale_mask = cfg_str(
         cfg, "wavelet_ctxscale_scale_mask", str(getattr(config, "wavelet_ctxscale_scale_mask", ""))
     )
+    # PAT-227: grid support upper bound as log2 exponent (default 14 = production).
+    config.wavelet_ctxscale_scale_max_exp = cfg_float(
+        cfg, "wavelet_ctxscale_scale_max_exp", float(getattr(config, "wavelet_ctxscale_scale_max_exp", 14.0))
+    )
     config.wavelet_ctx_feat_rms_eps = cfg_float(
         cfg, "wavelet_ctx_feat_rms_eps", float(getattr(config, "wavelet_ctx_feat_rms_eps", 1e-6))
     )
