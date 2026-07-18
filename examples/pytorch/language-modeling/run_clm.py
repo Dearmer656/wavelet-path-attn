@@ -4844,6 +4844,14 @@ def main():
         logger.info(f"Training new model from scratch - Total size={n_params / 2**20:.2f}M params")    
         _sanitize_wavelet_scalar_params(model, config, missing_keys=None)
 
+    # PAT-226: Mamba2Cache is not a plain tensor/list/tuple/dict, so accelerate's
+    # distributed-eval gather (_pad_across_processes) cannot handle it when
+    # use_cache=True returns it in the model output. Caching is meaningless for
+    # a single teacher-forced forward pass anyway (no .generate() call in
+    # do_eval); disabling it is a no-op on the computed loss/logits.
+    if str(getattr(config, "model_type", "")).strip().lower() == "mamba2":
+        model.config.use_cache = False
+
     _log_model_param_stats(model)
     embedding_size = model.get_input_embeddings().weight.shape[0]
     ######## freeze parameter #############
