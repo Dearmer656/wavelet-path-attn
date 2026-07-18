@@ -17,12 +17,17 @@
 set -euxo pipefail
 
 if [ -f /home/is/hongyu-s/miniconda3/etc/profile.d/conda.sh ]; then
-  set +u; source /home/is/hongyu-s/miniconda3/etc/profile.d/conda.sh; conda activate latest_transformers; set -u
+  set +u; source /home/is/hongyu-s/miniconda3/etc/profile.d/conda.sh; conda activate mamba2_env; set -u
 fi
 
 WORKDIR=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling
 cd "${WORKDIR}"
 
+# PAT-226: dedicated env (mamba2_env, torch 2.7.0+cu126) with the REAL CUDA
+# causal_conv1d/mamba_ssm kernels (matching cu12torch2.7 prebuilt wheels).
+# Fixes the gradient-explosion divergence traced to fla's untested Triton
+# conv1d fallback (see PAT-226 Linear comments, 2026-07-18); verified stable
+# via a 20-step smoke test (grad_norm 10.88->10.54, no blowup).
 export PYTHONPATH=/project/nlp-work5/hongyu-s/transformers/src:/project/nlp-work5/hongyu-s/flash-linear-attention:${PYTHONPATH:-}
 export HF_HOME=/cl/work5/hongyu-s/huggingfac
 export HF_DATASETS_CACHE=/cl/work5/hongyu-s/huggingfac/datasets
