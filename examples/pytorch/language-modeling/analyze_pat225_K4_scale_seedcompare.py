@@ -26,6 +26,7 @@ N_POS_BUCKETS = 8
 CKPTS = {
     "s42": "/project/nlp-work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/pat225_scale_card/S4_s42/checkpoint-15000",
     "s43": "/project/nlp-work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/pat225_scale_card/S4_s43/checkpoint-15000",
+    "s44": "/project/nlp-work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/pat225_scale_card/S4_s44/checkpoint-15000",
 }
 
 
@@ -179,19 +180,37 @@ def main():
     print(f"Saved: {out_path}")
 
     # Print a compact diff table: per layer, per bucket, L1 distance + which scale dominates
-    K4 = Ks["s42"]
     layer_ids = sorted(results["s42"].keys())
-    print("\n=== Per-layer, per-position-bucket scale distribution diff (s42 vs s43) ===")
+    print("\n=== Per-layer, per-position-bucket scale distribution diff (s42 vs s43 vs s44) ===")
     for lid in layer_ids:
         for b in range(N_POS_BUCKETS):
             p42 = np.array(results["s42"][lid][b])
             p43 = np.array(results["s43"][lid][b])
-            l1 = float(np.abs(p42 - p43).sum())
-            dom42 = int(np.argmax(p42))
-            dom43 = int(np.argmax(p43))
-            flag = " <== DIVERGE" if dom42 != dom43 and l1 > 0.15 else ""
+            p44 = np.array(results.get("s44", {}).get(lid, [[float("nan")] * len(p42)] * N_POS_BUCKETS)[b])
+            l1_4243 = float(np.abs(p42 - p43).sum())
+            dom42, dom43, dom44 = int(np.argmax(p42)), int(np.argmax(p43)), int(np.argmax(p44))
+            flag = " <== DIVERGE" if dom42 != dom43 and l1_4243 > 0.15 else ""
             print(f"L{lid:2d} bucket{b} (pos~{int(b*TARGET_LEN/N_POS_BUCKETS)}-{int((b+1)*TARGET_LEN/N_POS_BUCKETS)}): "
-                  f"s42={np.round(p42,3)} (dom=s{dom42}) s43={np.round(p43,3)} (dom=s{dom43}) L1={l1:.3f}{flag}")
+                  f"s42={np.round(p42,3)} (dom=s{dom42}) s43={np.round(p43,3)} (dom=s{dom43}) "
+                  f"s44={np.round(p44,3)} (dom=s{dom44}) L1(42,43)={l1_4243:.3f}{flag}")
+
+    # Explicit clustering check for the layers PAT-230's earlier s42-vs-s43 probe
+    # flagged as most divergent (L3, L7, L10): does s44 sit closer to s42 (making
+    # s42 the true behavioral outlier and s43/s44 the "normal" cluster) or closer
+    # to s43 (making s43 the outlier)?
+    if "s44" in results:
+        print("\n=== Clustering check at previously-flagged layers (mean over all position buckets) ===")
+        for lid in [3, 7, 10]:
+            if lid not in results["s42"]:
+                continue
+            m42 = np.array(results["s42"][lid]).mean(axis=0)
+            m43 = np.array(results["s43"][lid]).mean(axis=0)
+            m44 = np.array(results["s44"][lid]).mean(axis=0)
+            d_44_to_42 = float(np.abs(m44 - m42).sum())
+            d_44_to_43 = float(np.abs(m44 - m43).sum())
+            closer = "s42 (outlier confirmed to be alone)" if d_44_to_42 < d_44_to_43 else "s43 (s42 clusters alone -> outlier)"
+            print(f"L{lid:2d}: s42={np.round(m42,3)} s43={np.round(m43,3)} s44={np.round(m44,3)} | "
+                  f"|s44-s42|_1={d_44_to_42:.3f} |s44-s43|_1={d_44_to_43:.3f} -> s44 is closer to {closer}")
 
 
 if __name__ == "__main__":
