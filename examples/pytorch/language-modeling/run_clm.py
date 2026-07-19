@@ -4385,6 +4385,11 @@ def main():
     config.wavelet_ctxscale_scale_max_exp = cfg_float(
         cfg, "wavelet_ctxscale_scale_max_exp", float(getattr(config, "wavelet_ctxscale_scale_max_exp", 14.0))
     )
+    # PAT-225 seed-variance probe: inference-time per-layer knockout indices
+    # (comma-separated 0-based layer indices, forced to pi_null=1 / wavelet off).
+    config.wavelet_ctxscale_ko_layers = cfg_str(
+        cfg, "wavelet_ctxscale_ko_layers", str(getattr(config, "wavelet_ctxscale_ko_layers", ""))
+    )
     config.wavelet_ctx_feat_rms_eps = cfg_float(
         cfg, "wavelet_ctx_feat_rms_eps", float(getattr(config, "wavelet_ctx_feat_rms_eps", 1e-6))
     )
