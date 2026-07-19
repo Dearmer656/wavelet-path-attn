@@ -34,11 +34,12 @@ MASTER_PORT=$(( 24225 + SLURM_JOB_ID % 1000 ))
 
 echo "================= BEGIN RUN PAT-225 S=1 s44 ================="
 
-python -m torch.distributed.run --nproc_per_node=4 --master_port=${MASTER_PORT} ./run_clm.py \
+# elm44 shared 2x2 GPU: nproc 4->2, per-device batch 16->32 (global batch preserved: 32x2=16x4=64)
+python -m torch.distributed.run --nproc_per_node=2 --master_port=${MASTER_PORT} ./run_clm.py \
   --model_type gpt2 --tokenizer_name gpt2 --config_name gpt2 \
   --share_freq_across_heads True \
   --learning_rate 1e-4 --weight_decay 0.0 \
-  --per_device_train_batch_size 16 --per_device_eval_batch_size 16 \
+  --per_device_train_batch_size 32 --per_device_eval_batch_size 32 \
   --block_size 512 --dataset_name mix \
   --do_train --do_eval --eval_strategy steps --eval_steps 500 \
   --logging_dir "${RUN_OUT}/train_log" --logging_steps 500 \
