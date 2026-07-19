@@ -2,7 +2,7 @@
 #SBATCH --job-name=PAT225_K5
 #SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/pat225_scale_card/K5_s42/train/%j_pat225_S1_s42.txt
 #SBATCH --partition=gpu_long
-#SBATCH --gres=gpu:a6000:4
+#SBATCH --gres=gpu:a100-80:2
 #SBATCH --time=100:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
@@ -34,11 +34,13 @@ MASTER_PORT=$(( 24225 + SLURM_JOB_ID % 1000 ))
 
 echo "================= BEGIN RUN PAT-225 S=1 s42 ================="
 
-python -m torch.distributed.run --nproc_per_node=4 --master_port=${MASTER_PORT} ./run_clm.py \
+# elm44 (a100-80, 80GB/card): 4 GPUs -> 2 GPUs, per-device batch 16 -> 32 to
+# saturate VRAM. Global batch preserved: 32 x 2 = 16 x 4 = 64.
+python -m torch.distributed.run --nproc_per_node=2 --master_port=${MASTER_PORT} ./run_clm.py \
   --model_type gpt2 --tokenizer_name gpt2 --config_name gpt2 \
   --share_freq_across_heads True \
   --learning_rate 1e-4 --weight_decay 0.0 \
-  --per_device_train_batch_size 16 --per_device_eval_batch_size 16 \
+  --per_device_train_batch_size 32 --per_device_eval_batch_size 32 \
   --block_size 512 --dataset_name mix \
   --do_train --do_eval --eval_strategy steps --eval_steps 500 \
   --logging_dir "${RUN_OUT}/train_log" --logging_steps 500 \
