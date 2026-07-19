@@ -110,6 +110,14 @@ def run_seed(tag, ckpt_dir, examples, tokenizer, device):
     log2_scales = np.log2(np.array(scales))
     print(f"{tag}: K={K} scales={scales}")
 
+    # support_start_tok/support_end_tok in meta are relative to the concatenated
+    # context docs only (make_hotpot_long.py's context_tok_cursor), NOT to the
+    # full "Context:\n{ctx}\nQuestion:...\nAnswer:" prompt used for tokenization
+    # here. Must add the exact "Context:\n" prefix token length before comparing
+    # against query_pos, which IS in full-prompt token space.
+    context_prefix_len = len(tokenizer("Context:\n", add_special_tokens=True)["input_ids"])
+    print(f"{tag}: context_prefix_len={context_prefix_len} tokens")
+
     captured, handles = attach_hooks(model)
 
     records = []  # per example: {layer: eff_log_scale}, delta_gold
@@ -123,9 +131,12 @@ def run_seed(tag, ckpt_dir, examples, tokenizer, device):
             model(input_ids=input_ids)
 
         support_end_tok = int(ex["meta"]["support_end_tok"])
-        # "Context:\n" prefix is 2 tokens; use last query position as retrieval point.
+        # Convert support_end_tok from context-relative to full-prompt-relative
+        # token space before comparing against query_pos (see prefix-offset note
+        # in run_seed above).
+        support_end_tok_full = support_end_tok + context_prefix_len
         query_pos = T - 1
-        delta_gold = max(1, query_pos - support_end_tok)
+        delta_gold = max(1, query_pos - support_end_tok_full)
 
         layer_eff = {}
         for lid, pi in captured.items():
