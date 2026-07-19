@@ -494,6 +494,18 @@ class DataTrainingArguments:
         default=5,
         metadata={"help": "Number of digits in the hidden passkey number."},
     )
+    passkey_delta_key: Optional[int] = field(
+        default=None,
+        metadata={
+            "help": (
+                "PAT-230-D: exact token distance from the end of the hidden key "
+                "to the start of the answer position (filler_after + question "
+                "length). Overrides the default random filler_before/after split "
+                "so needle placement can be pinned to a target delta (e.g. a "
+                "QWAB scale's Ricker-peak distance). None = original random split."
+            )
+        },
+    )
     ruler_input_field: str = field(
         default="input",
         metadata={"help": "RULER JSONL field name for the prompt text."},
@@ -5171,10 +5183,20 @@ def main():
             while len(_filler_full) < _filler_budget:
                 _filler_full += _filler_one
             _filler_full = _filler_full[:_filler_budget]
-            # Randomly split filler into before/after the in-document key
-            _split = _pk_rng.randint(0, max(0, len(_filler_full)))
-            _filler_before = _filler_full[:_split]
-            _filler_after  = _filler_full[_split:]
+            _pk_delta = getattr(data_args, "passkey_delta_key", None)
+            if _pk_delta is not None:
+                # PAT-230-D: pin filler_after so that (key_end -> answer_start)
+                # distance = filler_after + question_ids == passkey_delta_key,
+                # clamped to what the filler budget can supply.
+                _target_after = max(0, int(_pk_delta) - len(_question_ids))
+                _target_after = min(_target_after, len(_filler_full))
+                _filler_before = _filler_full[: len(_filler_full) - _target_after]
+                _filler_after = _filler_full[len(_filler_full) - _target_after :]
+            else:
+                # Randomly split filler into before/after the in-document key
+                _split = _pk_rng.randint(0, max(0, len(_filler_full)))
+                _filler_before = _filler_full[:_split]
+                _filler_after  = _filler_full[_split:]
             # Assemble: intro | filler_before | key_prefix | key | filler_after | question | answer_key
             _input_ids = (_intro_ids + _filler_before + _prefix_ids + _key_ids
                           + _filler_after + _question_ids + _key_ids)
