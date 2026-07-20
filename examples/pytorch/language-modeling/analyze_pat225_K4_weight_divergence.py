@@ -55,10 +55,10 @@ def main():
         for L in range(N_LAYERS):
             all_layer_tensors[seed][L] = load_layer_tensors(seed, L)
 
-    print(f"=== Weight-space divergence at checkpoint-{STEP} (cosine sim, s42 vs s43 / s42 vs s44) ===")
-    header = f"{'L':>3} {'group':>28} {'cos(42,43)':>11} {'cos(42,44)':>11} {'relL2(42,43)':>13} {'relL2(42,44)':>13}"
+    print(f"=== Weight-space divergence at checkpoint-{STEP} (cosine sim, all 3 pairs) ===")
+    header = f"{'L':>3} {'group':>28} {'cos(42,43)':>11} {'cos(42,44)':>11} {'cos(43,44)':>11}"
     print(header)
-    agg = {g: {"cos43": [], "cos44": []} for g in GROUPS}
+    agg = {g: {"cos4243": [], "cos4244": [], "cos4344": []} for g in GROUPS}
     for L in range(N_LAYERS):
         for gname, keys in GROUPS.items():
             try:
@@ -68,18 +68,19 @@ def main():
             except KeyError as e:
                 print(f"  L{L} {gname}: missing key {e}")
                 continue
-            c43, c44 = cos_sim(t42, t43), cos_sim(t42, t44)
-            r43, r44 = rel_l2(t42, t43), rel_l2(t42, t44)
-            agg[gname]["cos43"].append(c43)
-            agg[gname]["cos44"].append(c44)
-            print(f"{L:>3} {gname:>28} {c43:>11.4f} {c44:>11.4f} {r43:>13.4f} {r44:>13.4f}")
+            c4243, c4244, c4344 = cos_sim(t42, t43), cos_sim(t42, t44), cos_sim(t43, t44)
+            agg[gname]["cos4243"].append(c4243)
+            agg[gname]["cos4244"].append(c4244)
+            agg[gname]["cos4344"].append(c4344)
+            print(f"{L:>3} {gname:>28} {c4243:>11.4f} {c4244:>11.4f} {c4344:>11.4f}")
 
-    print("\n=== Mean cosine similarity (s42 vs s43/s44) by parameter group, averaged over all 12 layers ===")
+    print("\n=== Mean cosine similarity by parameter group, averaged over all 12 layers ===")
     for gname, vals in agg.items():
-        if vals["cos43"]:
-            m43 = sum(vals["cos43"]) / len(vals["cos43"])
-            m44 = sum(vals["cos44"]) / len(vals["cos44"])
-            print(f"  {gname:>28}: mean cos(42,43)={m43:.4f}  mean cos(42,44)={m44:.4f}")
+        if vals["cos4243"]:
+            m4243 = sum(vals["cos4243"]) / len(vals["cos4243"])
+            m4244 = sum(vals["cos4244"]) / len(vals["cos4244"])
+            m4344 = sum(vals["cos4344"]) / len(vals["cos4344"])
+            print(f"  {gname:>28}: cos(42,43)={m4243:.4f}  cos(42,44)={m4244:.4f}  cos(43,44)={m4344:.4f}")
 
     out_path = Path(__file__).parent / "results" / "pat225_K4_weight_divergence.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
