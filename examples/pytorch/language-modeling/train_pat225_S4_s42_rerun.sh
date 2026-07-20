@@ -36,7 +36,7 @@ MASTER_PORT=$(( 24225 + SLURM_JOB_ID % 1000 ))
 
 echo "================= BEGIN RUN PAT-225 S=4 s42 RERUN (reproducibility check) ================="
 
-python -m torch.distributed.run --nproc_per_node=2 --master_port=${MASTER_PORT} ./run_clm.py \
+python -m torch.distributed.run --nproc_per_node=4 --master_port=${MASTER_PORT} ./run_clm.py \
   --model_type gpt2 --tokenizer_name gpt2 --config_name gpt2 \
   --share_freq_across_heads True \
   --learning_rate 1e-4 --weight_decay 0.0 \
@@ -52,7 +52,7 @@ python -m torch.distributed.run --nproc_per_node=2 --master_port=${MASTER_PORT} 
   --path_use_w_shortconv false --path_conv_size 3 \
   --warmup_ratio 0.05 --path_conv_bias false \
   --output_dir "${RUN_OUT}" --overwrite_output_dir \
-  --gradient_accumulation_steps 2 \
+  --gradient_accumulation_steps 1 \
   --b_unfreeze_step 5000 --pe_method no_pe --single_A_B True \
   --use_beta_modulation False --use_soft_wavelet_fox False \
   --wavelet_mode logit_bias_ctxscale_shift_v0 \
