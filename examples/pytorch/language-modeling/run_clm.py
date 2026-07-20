@@ -506,6 +506,30 @@ class DataTrainingArguments:
             )
         },
     )
+    wavelet_router_transplant_from: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": (
+                "PAT-225 anchor experiment: path to a checkpoint dir whose "
+                "wavelet_ctx_router.weight/bias (per layer) are copied into this "
+                "run's freshly-initialized model right after loading, before "
+                "training starts. Used to test whether transplanting a specific "
+                "seed's learned router policy into a different seed's run "
+                "reproduces that seed's extrapolation behavior. None = no-op."
+            )
+        },
+    )
+    wavelet_router_transplant_freeze: bool = field(
+        default=True,
+        metadata={
+            "help": (
+                "If wavelet_router_transplant_from is set, also freeze the "
+                "transplanted wavelet_ctx_router parameters (requires_grad=False) "
+                "so they stay fixed at the source seed's values for the entire "
+                "run instead of drifting under this run's own gradient updates."
+            )
+        },
+    )
     ruler_input_field: str = field(
         default="input",
         metadata={"help": "RULER JSONL field name for the prompt text."},
@@ -4818,6 +4842,37 @@ def main():
                         module.coe_for_rel.fill_(float(config.coe_for_rel_init))
         missing_keys = set(loading_info.get("missing_keys", [])) if isinstance(loading_info, dict) else set()
         _sanitize_wavelet_scalar_params(model, config, missing_keys=missing_keys)
+        # PAT-225 anchor experiment: transplant another seed's learned wavelet
+        # router weights into this model, optionally frozen, before training.
+        _transplant_src = getattr(data_args, "wavelet_router_transplant_from", None)
+        if _transplant_src:
+            from safetensors.torch import load_file as _load_safetensors
+            _src_path = os.path.join(_transplant_src, "model.safetensors")
+            _src_sd = _load_safetensors(_src_path)
+            _dst_sd = model.state_dict()
+            _copied, _frozen = [], []
+            for _k in list(_dst_sd.keys()):
+                if _k.endswith("wavelet_ctx_router.weight") or _k.endswith("wavelet_ctx_router.bias"):
+                    if _k not in _src_sd:
+                        raise KeyError(f"[router-transplant] key {_k} not found in source checkpoint {_src_path}")
+                    if _dst_sd[_k].shape != _src_sd[_k].shape:
+                        raise ValueError(
+                            f"[router-transplant] shape mismatch for {_k}: "
+                            f"dst={tuple(_dst_sd[_k].shape)} src={tuple(_src_sd[_k].shape)}"
+                        )
+                    _copied.append(_k)
+            with torch.no_grad():
+                for _name, _param in model.named_parameters():
+                    if _name in _copied:
+                        _param.data.copy_(_src_sd[_name].to(device=_param.device, dtype=_param.dtype))
+                        if bool(getattr(data_args, "wavelet_router_transplant_freeze", True)):
+                            _param.requires_grad_(False)
+                            _frozen.append(_name)
+            logger.info(
+                "[router-transplant] copied %d tensors from %s (frozen=%d): %s",
+                len(_copied), _src_path, len(_frozen), _copied,
+            )
+            print(f"[router-transplant] copied {len(_copied)} tensors from {_src_path}, frozen={len(_frozen)}", flush=True)
         # rotary_embedding_torch stores freqs as nn.Parameter (saved in checkpoint).
         # from_pretrained restores the checkpoint's theta=10000 freqs, overwriting __init__.
         # Force-overwrite with the correct rope_theta after loading.
