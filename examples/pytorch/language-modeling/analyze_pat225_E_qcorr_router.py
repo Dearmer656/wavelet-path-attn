@@ -133,8 +133,8 @@ def run_one(ckpt, examples, tokenizer, device):
             if L is not None:
                 handles.append(mod.register_forward_hook(
                     lambda m, i, o, LL=L: router_pi_hook(pi_store)(m, i, o, LL)))
-        # find the attention module per layer to read _probe_qf/_probe_qcorr
-        if name.endswith("attn") and hasattr(mod, "_ctxscale_router_feature"):
+        # find the PaTHAttention core module per layer (path: ...h.{L}.attn.core)
+        if isinstance(mod, pa.PaTHAttention):
             parts = name.split(".")
             L = None
             for i, p in enumerate(parts):
