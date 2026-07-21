@@ -150,6 +150,10 @@ def run_one(ckpt, examples, tokenizer, device):
     rel_pos_corr = {L: [] for L in range(N_LAYERS)}
     pinull_pos_std = {L: [] for L in range(N_LAYERS)}
     ent_pos_std = {L: [] for L in range(N_LAYERS)}
+    # mechanism probes for the rel_delta-decreases-with-position finding
+    cos_curve = {L: [] for L in range(N_LAYERS)}       # cos(qf, q_corr) vs position
+    normratio_curve = {L: [] for L in range(N_LAYERS)}  # ||q_corr||/||qf|| vs position
+    cos_pos_corr = {L: [] for L in range(N_LAYERS)}
 
     for ex in examples:
         pi_store.clear()
@@ -165,14 +169,23 @@ def run_one(ckpt, examples, tokenizer, device):
             qf = mod._probe_qf.squeeze(0)      # [T,H,d]
             qc = mod._probe_qcorr.squeeze(0)   # [T,H,d]
             delta = qf - qc
-            qf_norm = qf.norm(dim=-1).mean(dim=-1)      # [T] mean over heads
+            qf_norm_h = qf.norm(dim=-1)                 # [T,H]
+            qc_norm_h = qc.norm(dim=-1)                 # [T,H]
+            qf_norm = qf_norm_h.mean(dim=-1)            # [T] mean over heads
             d_norm = delta.norm(dim=-1).mean(dim=-1)    # [T]
             rel = (d_norm / qf_norm.clamp_min(1e-8)).cpu().numpy()  # [T]
+            # per-head cos(qf, q_corr), then mean over heads -> [T]
+            cos_h = (qf * qc).sum(dim=-1) / (qf_norm_h.clamp_min(1e-8) * qc_norm_h.clamp_min(1e-8))  # [T,H]
+            cos_t = cos_h.mean(dim=-1).cpu().numpy()    # [T]
+            nr_t = (qc_norm_h / qf_norm_h.clamp_min(1e-8)).mean(dim=-1).cpu().numpy()  # [T] ||qc||/||qf||
             T = len(rel)
             pos = np.arange(T)
             rel_curve[L].append(bucketize(rel, N_POS_BUCKETS))
+            cos_curve[L].append(bucketize(cos_t, N_POS_BUCKETS))
+            normratio_curve[L].append(bucketize(nr_t, N_POS_BUCKETS))
             if T > 2:
                 rel_pos_corr[L].append(float(np.corrcoef(pos, rel)[0, 1]))
+                cos_pos_corr[L].append(float(np.corrcoef(pos, cos_t)[0, 1]))
             if L in pi_store:
                 pi = pi_store[L]  # [T,K+1]
                 pinull = pi[:, 0]
@@ -198,7 +211,10 @@ def run_one(ckpt, examples, tokenizer, device):
         "rel_curve": agg(rel_curve),
         "pinull_curve": agg(pinull_curve),
         "ent_curve": agg(ent_curve),
+        "cos_curve": agg(cos_curve),
+        "normratio_curve": agg(normratio_curve),
         "rel_pos_corr": aggs(rel_pos_corr),
+        "cos_pos_corr": aggs(cos_pos_corr),
         "pinull_pos_std": aggs(pinull_pos_std),
         "ent_pos_std": aggs(ent_pos_std),
     }
@@ -225,19 +241,41 @@ def main():
     json.dump(results, open(out, "w"), indent=2)
     print(f"Saved {out}")
 
+    def g(d, L):
+        return d.get(L) if d.get(L) is not None else d.get(str(L))
+
     print("\n=== SUMMARY: does PaTH-state delta grow with position, and does routing vary with it? ===")
     for run in results:
         r = results[run]
         print(f"\n--- {run} ---")
         print("  L  | mean_rel_delta | corr(pos,rel) | pi_null_pos_std | ent_pos_std")
         for L in range(N_LAYERS):
-            rc = r["rel_curve"].get(L) or r["rel_curve"].get(str(L))
+            rc = g(r["rel_curve"], L)
             mean_rel = float(np.nanmean(rc)) if rc else float("nan")
-            c = r["rel_pos_corr"].get(L) or r["rel_pos_corr"].get(str(L))
-            ns = r["pinull_pos_std"].get(L) or r["pinull_pos_std"].get(str(L))
-            es = r["ent_pos_std"].get(L) or r["ent_pos_std"].get(str(L))
+            c = g(r["rel_pos_corr"], L)
+            ns = g(r["pinull_pos_std"], L)
+            es = g(r["ent_pos_std"], L)
             print(f"  {L:>2} | {mean_rel:>13.4f} | {(c if c is not None else float('nan')):>13.4f} "
                   f"| {(ns if ns is not None else float('nan')):>15.5f} | {(es if es is not None else float('nan')):>10.5f}")
+
+    print("\n=== MECHANISM: why rel_delta decreases with position ===")
+    print("  If cos(qf,q_corr) RISES with position -> q_corr gets more aligned to qf at late pos.")
+    print("  ||q_corr||/||qf|| ~ 1 everywhere -> norm-preserving (rotation); !=1 -> readout shrinks/grows.")
+    for run in results:
+        r = results[run]
+        print(f"\n--- {run} ---")
+        print("  L  | corr(pos,cos) | cos@early | cos@late | normratio@early | normratio@late")
+        for L in range(N_LAYERS):
+            cc = g(r["cos_curve"], L)
+            nr = g(r["normratio_curve"], L)
+            cpc = g(r["cos_pos_corr"], L)
+            if not cc or not nr:
+                continue
+            cc = np.array(cc); nr = np.array(nr)
+            ce, cl = float(np.nanmean(cc[:3])), float(np.nanmean(cc[-3:]))
+            ne, nl = float(np.nanmean(nr[:3])), float(np.nanmean(nr[-3:]))
+            print(f"  {L:>2} | {(cpc if cpc is not None else float('nan')):>13.4f} "
+                  f"| {ce:>9.4f} | {cl:>8.4f} | {ne:>15.4f} | {nl:>14.4f}")
 
 
 if __name__ == "__main__":
