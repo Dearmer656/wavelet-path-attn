@@ -675,7 +675,10 @@ class SupplyTrainingArguments(TrainingArguments):
         default=5000,
         metadata={
             "help": (
-                "The wB doesn't update until unfreeze_step"
+                "[DEPRECATED / NO-OP] Legacy B-branch freeze warmup. The freeze mechanism "
+                "(create_optimizer B-group split + create_scheduler lr-zeroing before this step) "
+                "was removed from trainer.py; this arg now has NO effect and is kept only so existing "
+                "scripts passing --b_unfreeze_step still parse."
             )
         },
     )
