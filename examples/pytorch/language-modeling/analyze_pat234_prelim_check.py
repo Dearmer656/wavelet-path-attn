@@ -104,9 +104,11 @@ def q1_empirical():
             if e.dim() == 2: e = e.unsqueeze(0)
             T = e.shape[-1]
             mask = torch.tril(torch.ones(T, T, device=e.device))  # valid keys j<=i
-            sq = (e**2) * mask
             cnt = mask.sum(-1).clamp_min(1.0)
-            bias_rms = torch.sqrt((sq.sum(-1) / cnt).clamp_min(0)).mean(0)  # [T] mean over heads
+            # CENTERED (softmax-relevant) bias RMS: subtract per-query mean over valid keys
+            mean_k = (e * mask).sum(-1) / cnt                      # [H,T]
+            e_c = (e - mean_k.unsqueeze(-1)) * mask
+            bias_rms = torch.sqrt(((e_c**2).sum(-1) / cnt).clamp_min(0)).mean(0)  # [T] centered, mean over heads
             # g0 = 1 - pi_null (per query), mean over heads if headwise
             g0 = (1.0 - nm.squeeze(0))
             while g0.dim() > 1: g0 = g0.mean(dim=-1) if g0.shape[-1] > 1 else g0.squeeze(-1)
@@ -118,7 +120,7 @@ def q1_empirical():
             if br[sl].std() > 1e-9 and g0n[sl].std() > 1e-9:
                 corrs.setdefault(lid, []).append(float(np.corrcoef(g0n[sl], br[sl])[0, 1]))
 
-    print("  layer | mean Corr(g0, per-query bias RMS) over examples  [>0 => g_{i,0} survives]")
+    print("  layer | mean Corr(g0, per-query CENTERED bias RMS) over examples  [>0 => g_{i,0} survives]")
     all_c = []
     for lid in sorted(corrs):
         c = float(np.mean(corrs[lid])); all_c.append(c)
