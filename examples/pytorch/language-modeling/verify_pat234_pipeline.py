@@ -177,17 +177,18 @@ def main():
         cfg.wavelet_ctxscale_chunk_q = TARGET_LEN  # single chunk -> clean [T,T] capture
         model = AutoModelForCausalLM.from_pretrained(ck, config=cfg, torch_dtype=torch.float32).to(dev).eval()
         print(f"\n## {label} ({run})")
-        print(f"{'center':>6} {'shift':>5} | {'S1_cen':>8} {'S3_cen':>8} {'S4pre':>8} {'S4post':>8} | {'attn_KL':>10}")
+        print(f"{'center':>6} {'shift':>5} | {'S1_norm':>8} {'S2_p99':>8} {'S3_gain':>8} {'S4post':>8} | {'attn_KL':>10}")
         res = {}
         for center_on in (False, True):
             for shift_on in (True, False):
                 r = run_condition(model, tok, exs, dev, center_on, shift_on)
                 res[(center_on, shift_on)] = r
-                print(f"{str(center_on):>6} {str(shift_on):>5} | {r['S1']:>8.4f} {r['S3']:>8.4f} {r['S4pre']:>8.4f} {r['S4post']:>8.4f} | {r['KL']:>10.3e}")
+                print(f"{str(center_on):>6} {str(shift_on):>5} | {r['S1']:>8.4f} {r['S2']:>8.4f} {r['S3']:>8.4f} {r['S4post']:>8.4f} | {r['KL']:>10.3e}")
         # explicit contrasts (shift ON)
         off = res[(False, True)]; on = res[(True, True)]
         print(f"  -> uncentered->RMS vs centered->RMS (S1): {off['S1']:.4f} -> {on['S1']:.4f}  (x{on['S1']/max(off['S1'],1e-9):.2f})")
-        print(f"  -> pre/post-gain (S1->S3, center ON):     {on['S1']:.4f} -> {on['S3']:.4f}")
+        print(f"  -> p99-clamp effect (S1->S2):  OFF {off['S1']:.4f}->{off['S2']:.4f} (x{off['S2']/max(off['S1'],1e-9):.2f}) | ON {on['S1']:.4f}->{on['S2']:.4f} (x{on['S2']/max(on['S1'],1e-9):.2f})")
+        print(f"  -> pre/post-gain (S2->S3, center ON):     {on['S2']:.4f} -> {on['S3']:.4f}")
         print(f"  -> pre/post-clamp (S4pre->S4post, ON):    {on['S4pre']:.4f} -> {on['S4post']:.4f}")
         print(f"  -> attn KL: centerOFF={off['KL']:.3e}  centerON={on['KL']:.3e}  (x{on['KL']/max(off['KL'],1e-12):.2f})")
         del model; torch.cuda.empty_cache()
