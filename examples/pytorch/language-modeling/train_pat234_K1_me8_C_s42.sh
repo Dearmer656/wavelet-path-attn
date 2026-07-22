@@ -2,7 +2,7 @@
 #SBATCH --job-name=PAT234_K1_me8_C_s42
 #SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/pat234_scale_card/K1_me8_C_s42/train/%j_train.txt
 #SBATCH --partition=gpu_long
-#SBATCH --gres=gpu:a6000:4
+#SBATCH --gres=gpu:a100:4
 #SBATCH --time=100:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
