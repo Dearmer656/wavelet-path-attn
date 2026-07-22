@@ -81,7 +81,6 @@ def m_eff_at_len(model, tok, exs, dev, L):
             cen = torch.sqrt((((e - mk.unsqueeze(-1)) ** 2) * mask).sum(-1) / cnt)
             m_causal.append(float(cen[:, 8:].mean().item()))
             raw_causal.append(float(raw[:, 8:].mean().item()))
-        del store
     pa.PaTHAttention._build_ctxscale_shift_logit_bias_v0 = orig
     return float(np.mean(m_causal)), float(np.mean(raw_causal))
 
