@@ -56,7 +56,11 @@ def m_eff(model, tok, exs, dev, shift_on):
     def wrapped(self, **kw):
         out = orig(self, **kw)
         try:
-            store[int(getattr(self, "layer_idx", -1) or -1)] = out[0].detach().float()
+            eff = out[0].detach().float()
+            base = kw.get("E_base_raw", None)
+            if base is not None:               # isolate wavelet-only bias (out[0] = base + wavelet)
+                eff = eff - base.detach().float()
+            store[int(getattr(self, "layer_idx", -1) or -1)] = eff
         except Exception:
             pass
         return out

@@ -19,7 +19,7 @@ sys.path.insert(0, "/project/nlp-work5/hongyu-s/flash-linear-attention")
 import fla.layers.path_attn as pa
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
-CKPT = "/project/nlp-work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/head_wise_scale_selection_vs_layer_wise/layer_wise/sigmoid_exp/s42_delta_detach/checkpoint-15000"
+CKPT = "/project/nlp-work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/pat225_scale_card/S1_me28_s42/checkpoint-15000"
 HOTPOT = "/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/data/hotpot_long_dev_uniform.jsonl"
 TARGET_LEN = 512   # training length: where coarse scales are most invisible (rho>=1024)
 N_SAMPLES = 4
@@ -43,7 +43,11 @@ def main():
     def wrapped(self, **kw):
         out = orig(self, **kw)
         try:
-            store[int(getattr(self, "layer_idx", -1) or -1)] = out[0].detach().float()
+            eff = out[0].detach().float()
+            base = kw.get("E_base_raw", None)
+            if base is not None:               # out[0] = base PaTH logits + wavelet; isolate wavelet-only
+                eff = eff - base.detach().float()
+            store[int(getattr(self, "layer_idx", -1) or -1)] = eff
         except Exception:
             pass
         return out
