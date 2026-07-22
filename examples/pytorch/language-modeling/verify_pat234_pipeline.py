@@ -83,8 +83,9 @@ def attn_kl(full, base):
     if full.dim() == 2:
         full = full.unsqueeze(0); base = base.unsqueeze(0)
     H, T, _ = full.shape
-    q_idx = torch.arange(T).view(T, 1)
-    k_idx = torch.arange(T).view(1, T)
+    dev = full.device
+    q_idx = torch.arange(T, device=dev).view(T, 1)
+    k_idx = torch.arange(T, device=dev).view(1, T)
     causal = (k_idx <= q_idx)
     neg = torch.finfo(full.dtype).min
     lf = full.masked_fill(~causal, neg)
