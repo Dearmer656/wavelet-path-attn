@@ -5,7 +5,8 @@ dev **F1** (autoregressive generation, `--path_attn_impl pytorch`), checkpoint-1
 **seed 42** unless noted. `–` = not run yet.
 
 **Naming:** `meX` = `wavelet_ctxscale_scale_max_exp = X`; single scale `ρ = 2^(X/2)`.
-me0→ρ1, me8→ρ16, me14→ρ128, me16→ρ256, me20→ρ1024, me28→ρ16384.
+me0→ρ1, me4→ρ4, me8→ρ16, me12→ρ64, me14→ρ128, me16→ρ256, me20→ρ1024,
+me24→ρ4096, me28→ρ16384.
 
 **Variants:** A = norm-ON, center-OFF (standard). C = norm-ON, **center-ON** (PAT-234).
 NOnorm = **norm-OFF**, center-OFF (raw wavelet).
@@ -17,10 +18,17 @@ NOnorm = **norm-OFF**, center-OFF (raw wavelet).
 | ρ (meX) | L512 | L2048 | L4096 |
 |---|---|---|---|
 | 1 (me0) | 0.7652 | 0.7339 | 0.6799 |
+| 4 (me4) | – | – | – |
 | 16 (me8) | 0.7638 | 0.7224 | 0.6524 |
+| **64 (me12)** | **0.7659** | **0.7319** | **0.6699** |
 | 128 (me14) | 0.7648 | 0.7302 | 0.6715 |
+| 256 (me16) | – | – | – |
 | 1024 (me20) | 0.7646 | 0.7261 | 0.6616 |
+| 4096 (me24) | – | – | – |
 | 16384 (me28) | 0.7643 | 0.7229 | 0.6594 |
+
+*me4/me16 training; me24 pending. K=8-grid scales = ρ{1,4,16,64,256,1024,4096,16384}
+(ρ128 is the geometric-center default, not in the grid).*
 
 ## C — norm-ON, center-ON  (`pat234_K1_*_C_s42`)
 
