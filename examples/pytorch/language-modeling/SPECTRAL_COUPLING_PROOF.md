@@ -60,26 +60,34 @@ near-constant over the causal window `[0, L]` (argument `Δ/ρ ≪ 1`), hence
 turns it into a slowly-varying ramp that **diffuses attention and is empirically
 harmful** (PAT-234: ΔF1 = −0.032 @ L4096; attention entropy 2.70→3.22).
 
-## 5. Theorem (band disjointness)
+## 5. Result (substantial band mismatch — empirically calibrated)
 
-> The frequencies of PaTH's extrapolation drift satisfy `f < f_train`; the wavelet
-> scales that are *usable* (softmax-visible, non-harmful) satisfy `f_peak > f_train`
-> (fine/mid, `ρ < ρ*`). Hence
->
->   **{drift band} ∩ {usable-scale band} = ∅.**
->
-> The only scales whose pass-band overlaps the drift are `ρ > ρ*`, which are
-> softmax-invisible (near-DC) and harmful when forced visible. Therefore QWAB's
-> wavelet subspace **cannot correct PaTH's length-extrapolation drift**: the
-> component it *could* represent (fine/mid, high-freq) is exactly the band where PaTH
-> does **not** drift, and the band where PaTH drifts is exactly the one QWAB cannot
-> usefully realize.
+The *analytic* threshold is exact: covering the drift band `f < f_train` requires
+`ρ > ρ* = √2 L /(2π) ≈ 115` (L=512), i.e. only the coarse scales
+`ρ ∈ {256,1024,4096,16384}` reach it, and those are softmax-invisible / harmful (§4).
 
-**Corollary (explains the observations).** This predicts, without fitting: (a) the
-inference wavelet is inert/removable (its usable band carries no drift) — confirmed,
-QWAB-off ≈ QWAB-on; (b) making coarse scales visible (centering) hurts, worst at long
-length — confirmed, −0.032 @ L4096; (c) the router avoids coarse scales at every
-length/position — confirmed, K=8 heatmaps.
+The *empirical* strength is a **substantial, layer-dependent mismatch, not a total
+one** (probe 528606):
+
+> A large fraction of PaTH's aligned extrapolation drift lies in the sub-training-length
+> band `f < f_train` reachable only by the unusable coarse scales:
+> **aggregate ≈ 0.31 of drift energy, up to 0.70 in early–mid layers (L2=0.70,
+> L1–L6 ∈ [0.34,0.70]), tapering to ~0.20 in late layers.**
+>
+> Hence QWAB's usable (fine/mid) scales **structurally cannot reach ≈1/3 (up to 2/3)
+> of the drift** — the part in the coarse-only band. This is a lower bound: the
+> high-frequency remainder of the measured δ is partly a population artifact (ā_512
+> and ā_4096 average over different query/key sets), and where it is genuine it sits
+> in the band where PaTH is well-sampled (little true drift) and QWAB is empirically
+> inert anyway.
+
+So the idealized "{drift} ∩ {usable} = ∅, coverage ≡ 0" is too strong; the honest
+statement is a **strong partial structural mismatch** concentrated in early–mid layers.
+
+**Corollary (still explains the observations).** (a) inference wavelet inert/removable
+— QWAB-off ≈ QWAB-on; (b) centering hurts, worst at long length — −0.032 @ L4096;
+(c) router avoids coarse scales at every length/position — K=8 heatmaps. The
+mechanism accounts for all three without fitting.
 
 ## 6. What is analytic vs. what the probe verifies
 
