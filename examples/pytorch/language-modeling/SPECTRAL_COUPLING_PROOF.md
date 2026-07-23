@@ -169,3 +169,62 @@ Direct test of §8.3: on identical inputs, `δ(Δ) = ā_QWAB-off(Δ) − ā_PaTH
 `f_peak(ρ16..ρ256)`, not the low-freq drift band. Concentration there = the wavelet's
 training frequencies imprinted into the PaTH weights. (Needs a generic attention-logit
 hook for the db1 PaTH-only model; the length-profile test §8.4 is the cheaper first cut.)
+
+> **⚠️ Superseded by §9.** The imprint conjecture in §8.2–§8.6 was tested directly
+> and **REFUTED**: QWAB training does NOT imprint scale-specific structure into the
+> PaTH backbone spectrum, at global, per-scale, or per-layer resolution. The
+> mechanism is **selection-to-match** (router reads the backbone), not imprint
+> (wavelet reshapes the backbone). See §9.
+
+---
+
+# 9. Does QWAB training SHAPE the PaTH backbone? — three-probe test (REFUTED)
+
+Direct frequency-domain test of §8's imprint story, using `E_base_raw` (the pure
+PaTH backbone logit, captured *before* the wavelet is added), so the spectrum
+reflects only what TRAINING left in the Q/K/Householder weights. All checkpoints
+seed 42, ckpt-15000, L4096, HotpotQA-Long.
+
+**9.1 Cross-ρ (scale-specific imprint).** *(probe_backbone_imprint.py, job 529111.)*
+Five K=1 no_pe models differing ONLY in the single trained scale
+ρ ∈ {1,16,128,1024,16384}; anchor = ensemble mean (no no_pe no-wavelet baseline
+exists — PA_baseline is vanilla-PE, `E_base_raw` includes RoPE, incomparable).
+- Backbone spectra are **near-identical** across ρ1→ρ16384 (overlap within linewidth
+  in the resolvable AC band). No model grows a bump at its own `f_peak(ρ)`.
+- The apparent "excess@f_peak +0.067/+0.035/+0.026" for fine scales is a
+  **noise-floor artifact** (fine f_peak sits at high freq where backbone power ≈1e-6).
+- Only a **weak, broadband** effect survives: spectral centroid decreases with ρ
+  (corr(log ρ, log cen) = −0.455, monotone over 4/5 with ρ1024 an outlier) — a few-‰
+  near-DC envelope shift, NOT localized at f_peak. ⇒ **no scale-specific imprint.**
+
+**9.2 Per-layer on K=8** (does each layer's *preferred* scale shape that layer?)
+*(probe_layer_scale_imprint.py, job 529141.)* Router gives layer ℓ scale ρ*(ℓ).
+- Global test **fails / wrong sign**: corr(log ρ*(ℓ), log cen(ℓ)) = **+0.333**
+  (predicted <0); dominated by the depth trend (L0 broadband outlier, general decrease).
+- Local test shows a signal **only for the two coarse-preferring early layers**:
+  L1→ρ16384 δ@f_peak=+0.31, L2→ρ4096 δ@f_peak=+0.21 (excess near-DC power). The 8
+  mid/fine-preferring layers have f_peak in the noise floor ⇒ δ≈0, unmeasurable.
+- **Confounded**: early layers are intrinsically low-freq AND happen to prefer coarse
+  scales — cannot tell imprint from depth.
+
+**9.3 Causal control K8 vs K1** (breaks the confound) *(probe_k8_vs_k1_layer.py,
+job 529148.)* Same seed42/init/data/steps; K8 lets each layer pick a scale, K1 forces
+ρ128 everywhere. δ_ℓ(f) = P^{K8}_ℓ − P^{K1}_ℓ isolates the causal effect of per-layer
+scale differentiation.
+- corr( log(ρ*_K8(ℓ)/128), K8−K1 low-band shift ) = **+0.013 (≈0)**. Coarse-pref
+  layers gain **−0.0013** low-band power (not +), fine-pref **+0.0008**. **NULL.**
+- Forcing L1/L2 to ρ128 leaves their backbones essentially unchanged ⇒ their low-freq
+  content is **intrinsic (depth-driven)**, present with or without the coarse choice.
+
+**9.4 Conclusion — selection-to-match, not imprint.** The causality runs the OTHER
+way from §8: the router **selects the scale that matches each layer's intrinsic,
+depth-driven positional-frequency geometry** — it READS the backbone, it does not
+RESHAPE it. Consistent with the whole body of evidence (inference wavelet
+inert/removable; ~2% additive perturbation, PAT-160; backbone scale-invariant): a
+light-touch additive bias does not drag the Q/K/Householder backbone during training,
+whatever K or ρ. The null survives three independent probes + is mechanistically
+expected, so it is not a pipeline artifact.
+
+**Boundary.** This tests the position-averaged kernel ā(Δ) spectrum. It does not rule
+out scale shaping **content-dependent** (Q/K-geometry) attention that averages out in
+ā(Δ); that would need a per-layer Q/K-subspace-vs-scale probe (the one open door).
