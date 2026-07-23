@@ -3888,6 +3888,21 @@ def main():
     transformers.utils.logging.enable_default_handler()
     transformers.utils.logging.enable_explicit_format()
 
+    # Log the exact code version (git commit of both repos) at run time, for reproducibility:
+    # every run maps to a recorded git version, and a DIRTY flag warns of uncommitted changes.
+    if training_args.should_log:
+        import subprocess as _sp
+        for _nm, _p in (("transformers", "/project/nlp-work5/hongyu-s/transformers"),
+                        ("flash-linear-attention", "/project/nlp-work5/hongyu-s/flash-linear-attention")):
+            try:
+                _h = _sp.check_output(["git", "-C", _p, "rev-parse", "HEAD"], text=True, stderr=_sp.DEVNULL).strip()
+                _b = _sp.check_output(["git", "-C", _p, "rev-parse", "--abbrev-ref", "HEAD"], text=True, stderr=_sp.DEVNULL).strip()
+                _d = _sp.check_output(["git", "-C", _p, "status", "--porcelain"], text=True, stderr=_sp.DEVNULL).strip()
+                logger.info("[CODE VERSION] %s: %s (%s)%s", _nm, _h[:12], _b,
+                            "  *** DIRTY: uncommitted changes ***" if _d else "")
+            except Exception as _e:
+                logger.info("[CODE VERSION] %s: unknown (%s)", _nm, _e)
+
     # Log on each process the small summary:
     logger.warning(
         f"Process rank: {training_args.local_rank}, device: {training_args.device}, n_gpu: {training_args.n_gpu}, "
