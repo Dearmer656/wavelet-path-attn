@@ -1,8 +1,9 @@
 #! /bin/bash
-#SBATCH --job-name=PAT234_K1_me20_NOnorm_s42
-#SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/pat234_scale_card/K1_me20_NOnorm_s42/train/%j_train.txt
+#SBATCH --job-name=PAT234_K1_me16_NOnorm_s42
+#SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/pat234_scale_card/K1_me16_NOnorm_s42/train/%j_train.txt
 #SBATCH --partition=gpu_long
-#SBATCH --gres=gpu:a100:4
+#SBATCH --gres=gpu:6000:4
+#SBATCH --nodelist=elm73
 #SBATCH --time=100:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
@@ -29,7 +30,7 @@ export WANDB_DISABLED=true
 export WANDB_MODE=disabled
 export HF_HUB_OFFLINE=1
 
-RUN_OUT="${WORKDIR}/runs/pat234_scale_card/K1_me20_NOnorm_s42"
+RUN_OUT="${WORKDIR}/runs/pat234_scale_card/K1_me16_NOnorm_s42"
 MASTER_PORT=$(( 24234 + SLURM_JOB_ID % 1000 ))
 
 echo "================= BEGIN RUN PAT-234 K1 me28 A (center OFF) s42 ================="
