@@ -106,3 +106,66 @@ Ricker band. §5 implies this bound is ≈0 for fine/mid ρ (disjoint bands) and
 coarse ρ, is multiplied by the (near-zero) softmax-visible fraction of that scale.
 Summing gives total wavelet coverage of the drift `≈ 0` **by construction of the
 scale grid vs. the training length** — a structural, not empirical, null.
+
+---
+
+# 8. Geometric explanation of the scaffolding gain
+
+Premise-(a) check (same seed s43, L4096): PaTH-only 0.6321 → QWAB-off 0.6446
+(+0.012, retained with wavelet disabled) → QWAB-on 0.6554 (+0.023). So QWAB
+*training* leaves a gain that survives removing the bias — a **training-time
+scaffold**, not an inference correction. The spectral framework explains it, and
+crucially explains why it is *small and in-distribution*, not an extrapolation fix.
+
+## 8.1 The wavelet is a frequency-localized attention prior — in the USABLE band
+
+The router picks mid scales ρ∈{16,64,256} (K=8 heatmaps). By the Ricker band law
+(§3), these sit at `f_peak ∈ [8.8e-4, 1.4e-2]` — i.e. **above / at f_train**, the
+well-sampled, non-drifting band (§2,§5). So during training the bias
+`b(Δ)=Σ_s π_s ricker(Δ/ρ_s)` injects a **band-pass, distance-selective** signal
+exactly where PaTH is well-behaved — a differentiable "attend at distance ≈ ρ_s" hint.
+
+## 8.2 Basin selection in weight space (why the gain exists)
+
+Learning distance-selective retrieval attention from scratch is a hard non-convex
+problem: Q/K/Householder must *discover* which relative distances matter. The additive
+Ricker prior supplies that distance structure **for free early in training**, so SGD
+can specialize Q/K on content *within* an already-good distance scaffold. This is a
+homotopy/curriculum: the loss landscape seen by the QWAB-trained model has the
+mid-range selectivity "pre-installed", steering optimization into a basin whose PaTH
+weights encode good mid-range attention — a basin a PaTH-only run can miss.
+
+## 8.3 Imprint & removability (why it survives disabling)
+
+Once the Householder spectrum `{ω_m}` and Q/K projections encode the mid-range pattern,
+the additive bias is **redundant** — the pattern now lives in the weights. Removing it
+at inference keeps the pattern ⇒ QWAB-off > PaTH-only (the +0.012). The extra +0.011
+from turning it on is the (small, band-limited) residual direct contribution.
+
+## 8.4 Spectral signature ⇒ the gain is IN-DISTRIBUTION, not an extrapolation fix
+
+Because the scaffold operates in the usable (high-freq, f>f_train) band, it refines a
+region PaTH already samples well. Two consequences, both falsifiable:
+- **It cannot touch the low-freq extrapolation drift** (§5): consistent with the
+  inference wavelet being inert/harmful and the router avoiding coarse scales.
+- **The gain is a better *base* model, ≈ uniform across lengths** — NOT growing with
+  extrapolation distance. Prediction: `gain(L512) ≈ gain(L2048) ≈ gain(L4096)`.
+  *(test: PaTH-only s43 @ L512/L2048 vs QWAB s43; if the +0.02 is roughly length-flat →
+  in-distribution scaffold confirmed; if it grows with length → contradicts this account.)*
+
+## 8.5 One coherent picture
+
+The **same** frequency mismatch that makes QWAB useless as an *inference* positional
+corrector (drift lives in the coarse-only band it cannot realize, §5) makes it a mild
+*training* regularizer (its mid band coincides with the useful, well-sampled retrieval
+distances). Wavelet-as-inference-bias: inert/harmful. Wavelet-as-training-scaffold:
+small, in-distribution, removable gain. Both fall out of one law:
+`f_peak(ρ)=√2/(2πρ)` vs the training-length Nyquist `f_train=1/L`.
+
+## 8.6 Geometric verification (weight-space imprint)
+
+Direct test of §8.3: on identical inputs, `δ(Δ) = ā_QWAB-off(Δ) − ā_PaTH-only(Δ)`
+(both are pure-PaTH logits) should have its energy in the **mid-scale band**
+`f_peak(ρ16..ρ256)`, not the low-freq drift band. Concentration there = the wavelet's
+training frequencies imprinted into the PaTH weights. (Needs a generic attention-logit
+hook for the db1 PaTH-only model; the length-profile test §8.4 is the cheaper first cut.)
