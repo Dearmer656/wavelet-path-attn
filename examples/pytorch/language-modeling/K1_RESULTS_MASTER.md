@@ -5,8 +5,8 @@ dev **F1** (autoregressive generation, `--path_attn_impl pytorch`), checkpoint-1
 **seed 42** unless noted. `–` = not run yet.
 
 **Naming:** `meX` = `wavelet_ctxscale_scale_max_exp = X`; single scale `ρ = 2^(X/2)`.
-me0→ρ1, me4→ρ4, me8→ρ16, me12→ρ64, me14→ρ128, me16→ρ256, me20→ρ1024,
-me24→ρ4096, me28→ρ16384.
+me0→ρ1, me2→ρ2, me4→ρ4, me6→ρ8, me8→ρ16, me10→ρ32, me12→ρ64, me14→ρ128,
+me16→ρ256, me20→ρ1024, me22→ρ2048, me24→ρ4096, me26→ρ8192, me28→ρ16384.
 
 **Variants:** A = norm-ON, center-OFF (standard). C = norm-ON, **center-ON** (PAT-234).
 NOnorm = **norm-OFF**, center-OFF (raw wavelet).
@@ -18,17 +18,24 @@ NOnorm = **norm-OFF**, center-OFF (raw wavelet).
 | ρ (meX) | L512 | L2048 | L4096 |
 |---|---|---|---|
 | 1 (me0) | 0.7652 | 0.7339 | 0.6799 |
+| 2 (me2) | – | – | – |
 | 4 (me4) | 0.7633 | 0.7207 | 0.6471 |
+| 8 (me6) | – | – | – |
 | 16 (me8) | 0.7638 | 0.7224 | 0.6524 |
+| 32 (me10) | – | – | – |
 | **64 (me12)** | **0.7659** | **0.7319** | **0.6699** |
 | 128 (me14) | 0.7648 | 0.7302 | 0.6715 |
 | 256 (me16) | 0.7588 | 0.7079 | 0.6433 |
 | 1024 (me20) | 0.7646 | 0.7261 | 0.6616 |
-| 4096 (me24) | – | – | – |
+| 2048 (me22) | – | – | – |
+| 4096 (me24) | 0.7612 | 0.7259 | 0.6648 |
+| 8192 (me26) | – | – | – |
 | 16384 (me28) | 0.7643 | 0.7229 | 0.6594 |
 
-*me4/me16 training; me24 pending. K=8-grid scales = ρ{1,4,16,64,256,1024,4096,16384}
-(ρ128 is the geometric-center default, not in the grid).*
+*K=8-grid scales (ρ{1,4,16,64,256,1024,4096,16384}) all DONE + ρ128 center.
+Intermediate scales ρ{2,8,32,2048,8192} (me2/6/10/22/26) training 2026-07-24, evals
+auto-wired. ρ512 (me18) not requested. **All done scales beat PA-only@L4096 (0.6309),
+range 0.643–0.680** — extrapolation gain is scale-robust; ρ1/ρ64/ρ128 lead.*
 
 ## C — norm-ON, center-ON  (`pat234_K1_*_C_s42`)
 
