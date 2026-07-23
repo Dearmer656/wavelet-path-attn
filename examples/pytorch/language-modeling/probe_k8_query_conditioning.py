@@ -71,7 +71,11 @@ def main():
     layers, scales = {}, None
     for m in model.modules():
         if isinstance(m, pa.PaTHAttention):
-            layers[int(getattr(m, "layer_idx", -1) or -1)] = m
+            _lid = getattr(m, "layer_idx", None)
+
+            if _lid is None: continue
+
+            layers[int(_lid)] = m
             if scales is None and hasattr(m, "wavelet_ctxscale_scales"):
                 scales = m.wavelet_ctxscale_scales.detach().float().cpu().numpy()
     L = max(layers) + 1; K = len(scales)

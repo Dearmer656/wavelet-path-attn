@@ -42,7 +42,9 @@ def main():
     scales = None
     for m in model.modules():
         if isinstance(m, pa.PaTHAttention):
-            lid = int(getattr(m, "layer_idx", -1) or -1)
+            _lid = getattr(m, "layer_idx", None)
+            if _lid is None: continue
+            lid = int(_lid)
             layers[lid] = m
             if scales is None and hasattr(m, "wavelet_ctxscale_scales"):
                 scales = m.wavelet_ctxscale_scales.detach().float().cpu().numpy()
