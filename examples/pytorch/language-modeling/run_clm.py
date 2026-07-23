@@ -3897,7 +3897,7 @@ def main():
             try:
                 _h = _sp.check_output(["git", "-C", _p, "rev-parse", "HEAD"], text=True, stderr=_sp.DEVNULL).strip()
                 _b = _sp.check_output(["git", "-C", _p, "rev-parse", "--abbrev-ref", "HEAD"], text=True, stderr=_sp.DEVNULL).strip()
-                _d = _sp.check_output(["git", "-C", _p, "status", "--porcelain"], text=True, stderr=_sp.DEVNULL).strip()
+                _d = _sp.check_output(["git", "-C", _p, "status", "--porcelain", "-uno"], text=True, stderr=_sp.DEVNULL).strip()
                 logger.info("[CODE VERSION] %s: %s (%s)%s", _nm, _h[:12], _b,
                             "  *** DIRTY: uncommitted changes ***" if _d else "")
             except Exception as _e:
