@@ -69,7 +69,7 @@ def main():
             rp = getattr(m, "_last_ctxscale_router_prob", None)   # [B,T,H,K] or [B,T,K]
             if rp is None: continue
             r = rp.detach().float()
-            while r.dim() > 2:            # collapse batch/token/head -> mean over all but last (K)
+            while r.dim() > 1:            # collapse batch/token/head -> mean over all but last (K)
                 r = r.mean(dim=0)
             acc[lid] += r.cpu().numpy(); nacc[lid] += 1
             nm = getattr(m, "_last_ctxscale_null_mass", None)
