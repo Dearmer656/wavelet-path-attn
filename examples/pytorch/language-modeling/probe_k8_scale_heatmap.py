@@ -21,7 +21,7 @@ from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 CKPT = "/project/nlp-work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/head_wise_scale_selection_vs_layer_wise/layer_wise/sigmoid_exp/s42_delta_detach/checkpoint-15000"
 HOTPOT = "/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/data/hotpot_long_dev_uniform.jsonl"
 OUT = Path("/project/nlp-work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/pat234_scale_card")
-TARGET_LEN = 512
+TARGET_LEN = int(sys.argv[1]) if len(sys.argv) > 1 else 512
 N_SAMPLES = 8
 
 
@@ -94,13 +94,13 @@ def main():
         ax.set_xticks(range(K)); ax.set_xticklabels([f"ρ{int(s)}" for s in scales], rotation=45, ha="right")
         ax.set_yticks(range(L)); ax.set_yticklabels([f"L{i}" for i in range(L)])
         ax.set_xlabel("scale ρ"); ax.set_ylabel("layer")
-        ax.set_title("K=8 QWAB (s42_delta_detach): per-layer scale selection  π_scale  @ L512")
+        ax.set_title(f"K=8 QWAB (s42_delta_detach): per-layer scale selection  π_scale  @ L{TARGET_LEN}")
         for i in range(L):
             for j in range(K):
                 ax.text(j, i, f"{mat[i,j]:.2f}", ha="center", va="center",
                         color="white" if mat[i,j] < mat.max()*0.6 else "black", fontsize=7)
         fig.colorbar(im, ax=ax, label="π_scale (non-null selection weight)")
-        out = OUT / "k8_scale_selection_heatmap.png"
+        out = OUT / f"k8_scale_selection_heatmap_L{TARGET_LEN}.png"
         fig.tight_layout(); fig.savefig(out, dpi=150)
         print(f"\nsaved: {out}")
     except Exception as e:

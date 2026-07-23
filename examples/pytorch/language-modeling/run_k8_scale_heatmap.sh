@@ -14,5 +14,5 @@ cd /cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling
 export PYTHONPATH=/project/nlp-work5/hongyu-s/transformers/src:/project/nlp-work5/hongyu-s/flash-linear-attention:${PYTHONPATH:-}
 export HF_HOME=/cl/work5/hongyu-s/huggingfac
 export WANDB_DISABLED=true; export WANDB_MODE=disabled; export HF_HUB_OFFLINE=1
-python ./probe_k8_scale_heatmap.py
+python ./probe_k8_scale_heatmap.py "${1:-512}"
 echo "=== done ==="
