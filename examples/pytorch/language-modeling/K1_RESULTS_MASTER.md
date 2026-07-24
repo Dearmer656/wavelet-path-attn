@@ -58,6 +58,24 @@ range 0.643–0.680** — extrapolation gain is scale-robust; ρ1/ρ64/ρ128 lea
 | 1024 (me20) | – | – | 🔄 running |
 | 16384 (me28) | – | – | – |
 
+## noC1 — RMS-ON, Clamp1(p99)-OFF  (`pat234_K1_*_noC1_s42`)
+
+Single-variable vs A-block (only clamp_enable=false). ρ1's RMS peak(21) now hits
+Clamp2 → **±4.0 boxcar** (not raw Mexican-hat). Tests "delete Clamp1" effect alone.
+
+| ρ (meX) | L512 | L2048 | L4096 | Δ@L4096 vs A |
+|---|---|---|---|---|
+| 1 (me0) | 🔄 | 🔄 | 🔄 | (clamp effect strongest here) |
+| 4 (me4) | 0.7670 | 0.7218 | 0.6500 | +0.003 (noise) |
+| 16 (me8) | 🔄 | 🔄 | 🔄 | |
+
+*ρ4: noC1 ≈ A-block (within seed noise) → deleting Clamp1 doesn't help at ρ4.*
+
+## signed — RMS-ON, Clamp1-OFF, router π=2σ−1  (`pat234_K1_*_noC1_signed_s42`)
+
+Single-variable vs noC1 (only sigmoid_mode=signed). Router can flip ricker polarity
+(π<0 = suppress BOS anchor). | ρ1 (me0): 🔄 running.
+
 ## REF — full models, 3-seed means (PAT-61)
 
 | model | L512 | L1024 | L2048 | L3072 | L4096 |
