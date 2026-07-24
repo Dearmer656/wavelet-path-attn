@@ -34,11 +34,11 @@ MASTER_PORT=$(( 24234 + SLURM_JOB_ID % 1000 ))
 
 echo "================= BEGIN RUN PAT-234 K1 me28 A (center OFF) s42 ================="
 
-python -m torch.distributed.run --nproc_per_node=2 --master_port=${MASTER_PORT} ./run_clm.py \
+python -m torch.distributed.run --nproc_per_node=4 --master_port=${MASTER_PORT} ./run_clm.py \
   --model_type gpt2 --tokenizer_name gpt2 --config_name gpt2 \
   --share_freq_across_heads True \
   --learning_rate 1e-4 --weight_decay 0.0 \
-  --per_device_train_batch_size 32 --per_device_eval_batch_size 16 \
+  --per_device_train_batch_size 16 --per_device_eval_batch_size 16 \
   --block_size 512 --dataset_name mix \
   --do_train --eval_strategy no \
   --logging_dir "${RUN_OUT}/train_log" --logging_steps 500 \
