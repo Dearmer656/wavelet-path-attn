@@ -70,6 +70,15 @@ range 0.643–0.680** — extrapolation gain is scale-robust; ρ1/ρ64/ρ128 lea
 
 ## Caveats (read before interpreting)
 
+0. **⚠️ FINE SCALES ARE GUTTED BY THE p99 CLAMP (probe_clamp_utilization.py, 2026-07-24).**
+   per-scale RMS amplifies the sparse fine-scale spike (ρ1: 20.9×), then the p99 clamp
+   threshold sits in the near-zero floor (99% of keys ≈0) and clips it away. Measured
+   energy retained after p99: **ρ1 E_kept=0.000 (peak 334× over thr), ρ16=0.90,
+   ρ256≈1.00, ρ16384≈1.00.** ⇒ the ρ1/ρ4 rows test ≈ "near-zero wavelet ≈ PA-only",
+   NOT a fine-scale wavelet. So "ρ1 best (0.68)" is consistent with wavelet-inert, NOT
+   with fine scales being good. Clamp2 (±g_bias_max=4.0) is essentially inert now
+   (sat%≈0). Fixing this (clamp after sum / scale-aware thr / analytic norm) is required
+   before any multi-scale free-selection design can let fine scales contribute.
 1. **K=1 rows are single-seed (s42).** Per-scale/length differences ≲ 0.02 are within
    seed noise. Only effects > ~0.02 are trustworthy (e.g. C ρ16384 = −0.032 vs A).
 2. **Do NOT compare K=1 F1 directly to PA-only.** K=1 ablations use `--pe_method no_pe`;
