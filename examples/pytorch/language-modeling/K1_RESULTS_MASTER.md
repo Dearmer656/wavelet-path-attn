@@ -87,10 +87,18 @@ Single-variable vs noC1 (only sigmoid_mode=signed). Router can flip ricker polar
 
 | ρ (meX) | L512 | L2048 | L4096 | vs A / vs noC1 |
 |---|---|---|---|---|
-| **1 (me0)** | 0.7663 | 0.7229 | **0.6581** | −0.022 / **+0.011** |
-| 16 (me8) | 🔄 | 🔄 | 🔄 | |
-| 64 (me12) | 🔄 | 🔄 | 🔄 | |
+| **1 (me0)** | 0.7663 | 0.7229 | **0.6581** | −0.022 / **+0.011** ✓clean |
+| 16 (me8) | 🔄 | 🔄 | 🔄 | (noC1 exists → clean) |
+| 64 (me12) | 0.7599 | 0.7085 | **0.6275** | −0.042 vs A ⚠️2-var |
 | 256 (me16) | 🔄 | 🔄 | 🔄 | |
+| 128 (me14) | 🔄 | 🔄 | 🔄 | |
+| 1024 (me20) | 🔄 | 🔄 | 🔄 | |
+
+**⚠️ Clean signed-vs-unsigned single-variable comparison only exists at ρ1 & ρ16**
+(both noC1 AND signed run). ρ64/128/256/1024 signed lack their noC1 baseline → their
+"vs A-block" mixes 2 variables (Clamp1-off + signed). ρ64 signed=0.6275 (−0.042 vs A)
+with MIXED bias sign (not clean-negative like ρ1) — possibly a bad router basin
+(basin choice is seed-stochastic, PAT-225). Don't over-read a single mid-scale drop.
 
 **ρ1 3-way @L4096: A-block(gutted≈PA)=0.6799 > signed(suppress BOS)=0.6581 >
 noC1(enhance BOS)=0.6472.** MECHANISM CONFIRMED via bias-mean sign: unsigned noC1
