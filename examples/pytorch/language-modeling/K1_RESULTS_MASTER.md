@@ -83,7 +83,22 @@ Confirms the fine-scale rows are a clamp artifact. → motivates **signed** (fli
 ## signed — RMS-ON, Clamp1-OFF, router π=2σ−1  (`pat234_K1_*_noC1_signed_s42`)
 
 Single-variable vs noC1 (only sigmoid_mode=signed). Router can flip ricker polarity
-(π<0 = suppress BOS anchor). | ρ1 (me0): 🔄 running.
+(π<0 = suppress BOS anchor).
+
+| ρ (meX) | L512 | L2048 | L4096 | vs A / vs noC1 |
+|---|---|---|---|---|
+| **1 (me0)** | 0.7663 | 0.7229 | **0.6581** | −0.022 / **+0.011** |
+| 16 (me8) | 🔄 | 🔄 | 🔄 | |
+| 64 (me12) | 🔄 | 🔄 | 🔄 | |
+| 256 (me16) | 🔄 | 🔄 | 🔄 | |
+
+**ρ1 3-way @L4096: A-block(gutted≈PA)=0.6799 > signed(suppress BOS)=0.6581 >
+noC1(enhance BOS)=0.6472.** MECHANISM CONFIRMED via bias-mean sign: unsigned noC1
+learns POSITIVE bias (enhance BOS, mean +0.3..+0.9); **signed learns NEGATIVE bias
+(suppress BOS sink, mean −0.1..−0.7)**. So the router, given the freedom, WANTS to
+suppress BOS — and suppressing (+0.011) beats enhancing. **Signed idea directionally
+validated.** But fine-scale bias (any sign) still < no-bias (A-block): the ρ1/BOS
+wavelet is net-harmful; clamp-to-≈0 is best. Signed recovers ⅓ of noC1's loss, not all.
 
 ## REF — full models, 3-seed means (PAT-61)
 
