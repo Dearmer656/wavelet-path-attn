@@ -65,11 +65,16 @@ Clamp2 → **±4.0 boxcar** (not raw Mexican-hat). Tests "delete Clamp1" effect 
 
 | ρ (meX) | L512 | L2048 | L4096 | Δ@L4096 vs A |
 |---|---|---|---|---|
-| 1 (me0) | 🔄 | 🔄 | 🔄 | (clamp effect strongest here) |
+| **1 (me0)** | 0.7641 | 0.7204 | **0.6472** | **−0.033 ❗ HURTS** |
 | 4 (me4) | 0.7670 | 0.7218 | 0.6500 | +0.003 (noise) |
 | 16 (me8) | 🔄 | 🔄 | 🔄 | |
 
-*ρ4: noC1 ≈ A-block (within seed noise) → deleting Clamp1 doesn't help at ρ4.*
+**KEY: deleting Clamp1 at ρ1 HURTS L4096 by −0.033 (>> noise). The p99 clamp was
+PROTECTIVE** — it gutted ρ1's BOS-anchored spike; deleting it gives a +4.0 BOS boxcar
+→ attention collapses onto the BOS sink → worse extrapolation. So A-block "ρ1=0.68 best"
+is because the wavelet was clamped to ≈0 (≈PA-only), NOT because fine scale helps.
+Confirms the fine-scale rows are a clamp artifact. → motivates **signed** (flip to −BOS
+= suppress the sink, which the +bias can't reach).
 
 ## signed — RMS-ON, Clamp1-OFF, router π=2σ−1  (`pat234_K1_*_noC1_signed_s42`)
 
