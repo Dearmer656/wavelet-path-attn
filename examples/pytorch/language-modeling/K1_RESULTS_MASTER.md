@@ -67,7 +67,11 @@ Clamp2 → **±4.0 boxcar** (not raw Mexican-hat). Tests "delete Clamp1" effect 
 |---|---|---|---|---|
 | **1 (me0)** | 0.7641 | 0.7204 | **0.6472** | **−0.033 ❗ HURTS** |
 | 4 (me4) | 0.7670 | 0.7218 | 0.6500 | +0.003 (noise) |
-| 16 (me8) | 🔄 | 🔄 | 🔄 | |
+| 16 (me8) | 0.7678 | 0.7337 | 0.6624 | +0.010 (mild+) |
+
+*Scale-dependent: Clamp1-delete HURTS at ρ1 (−0.033, sharp BOS spike) but mildly HELPS
+at ρ16 (+0.010, wide scale, clamp was ~inert there E_kept=0.90). The clamp's protection
+is specific to sharp fine scales.*
 
 **KEY: deleting Clamp1 at ρ1 HURTS L4096 by −0.033 (>> noise). The p99 clamp was
 PROTECTIVE** — it gutted ρ1's BOS-anchored spike; deleting it gives a +4.0 BOS boxcar
