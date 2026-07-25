@@ -88,7 +88,7 @@ Single-variable vs noC1 (only sigmoid_mode=signed). Router can flip ricker polar
 | ρ (meX) | L512 | L2048 | L4096 | vs A / vs noC1 |
 |---|---|---|---|---|
 | **1 (me0)** | 0.7663 | 0.7229 | **0.6581** | −0.022 / **+0.011** ✓clean |
-| 16 (me8) | 🔄 | 🔄 | 🔄 | (noC1 exists → clean) |
+| **16 (me8)** | 0.7543 | 0.7013 | **0.6144** | −0.038 / **−0.048 ❗** ✓clean |
 | 64 (me12) | 0.7599 | 0.7085 | **0.6275** | −0.042 vs A ⚠️2-var |
 | 256 (me16) | 🔄 | 🔄 | 🔄 | |
 | 128 (me14) | 🔄 | 🔄 | 🔄 | |
@@ -100,13 +100,16 @@ Single-variable vs noC1 (only sigmoid_mode=signed). Router can flip ricker polar
 with MIXED bias sign (not clean-negative like ρ1) — possibly a bad router basin
 (basin choice is seed-stochastic, PAT-225). Don't over-read a single mid-scale drop.
 
-**ρ1 3-way @L4096: A-block(gutted≈PA)=0.6799 > signed(suppress BOS)=0.6581 >
-noC1(enhance BOS)=0.6472.** MECHANISM CONFIRMED via bias-mean sign: unsigned noC1
-learns POSITIVE bias (enhance BOS, mean +0.3..+0.9); **signed learns NEGATIVE bias
-(suppress BOS sink, mean −0.1..−0.7)**. So the router, given the freedom, WANTS to
-suppress BOS — and suppressing (+0.011) beats enhancing. **Signed idea directionally
-validated.** But fine-scale bias (any sign) still < no-bias (A-block): the ρ1/BOS
-wavelet is net-harmful; clamp-to-≈0 is best. Signed recovers ⅓ of noC1's loss, not all.
+**signed does NOT reliably learn the right polarity (clean at ρ1 & ρ16):**
+- **ρ1**: +bias harmful. noC1(enhance)=0.6472, signed(learns NEGATIVE, suppress BOS,
+  bias-mean −0.1..−0.7)=0.6581 → signed +0.011 (right call: suppress).
+- **ρ16**: +bias HELPFUL. noC1(enhance, bias-mean +0.13..+0.25)=0.6624, signed
+  (collapses to ≈0, bias-mean −0.02..+0.01)=0.6144 → signed **−0.048** (wrong: failed to
+  commit to the beneficial positive that unsigned found).
+So signed suppresses where suppress is right (ρ1) but fails to enhance where enhance is
+right (ρ16) → net inconsistent, not a reliable win. **NOT an init artifact**: router
+starts near-neutral (a_init=-2 is the g_layer gain, disabled=1.0; not the router logit;
+early signed bias mixed, not −0.76). Both fine/mid scales: no-bias (A-block) still best.
 
 ## REF — full models, 3-seed means (PAT-61)
 
