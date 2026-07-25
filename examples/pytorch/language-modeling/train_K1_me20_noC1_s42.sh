@@ -1,6 +1,6 @@
 #! /bin/bash
-#SBATCH --job-name=PAT234_K1_me16_noC1_s42
-#SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/pat234_scale_card/K1_me16_noC1_s42/train/%j_pat225_S1_me16_s42.txt
+#SBATCH --job-name=PAT234_K1_me20_noC1_s42
+#SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/pat234_scale_card/K1_me20_noC1_s42/train/%j_pat225_S1_me20_s42.txt
 #SBATCH --partition=gpu_long
 #SBATCH --gres=gpu:a6000:2
 #SBATCH --time=100:00:00
@@ -29,7 +29,7 @@ export HF_DATASETS_CACHE=/cl/work5/hongyu-s/huggingfac/datasets
 export WANDB_DISABLED=true
 export WANDB_MODE=disabled
 
-RUN_OUT="${WORKDIR}/runs/pat234_scale_card/K1_me16_noC1_s42"
+RUN_OUT="${WORKDIR}/runs/pat234_scale_card/K1_me20_noC1_s42"
 MASTER_PORT=$(( 24225 + SLURM_JOB_ID % 1000 ))
 
 echo "================= BEGIN RUN PAT-225 S=1 s42 ================="
@@ -40,7 +40,7 @@ python -m torch.distributed.run --nproc_per_node=2 --master_port=${MASTER_PORT} 
   --learning_rate 1e-4 --weight_decay 0.0 \
   --per_device_train_batch_size 16 --per_device_eval_batch_size 16 \
   --block_size 512 --dataset_name mix \
-  --do_train --eval_strategy no \
+  --do_train --do_eval --eval_strategy steps --eval_steps 500 \
   --logging_dir "${RUN_OUT}/train_log" --logging_steps 500 \
   --num_train_epochs 10 --num_harmonics 1 \
   --wavelet_pe_softmax_use False \
