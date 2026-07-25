@@ -92,7 +92,7 @@ Single-variable vs noC1 (only sigmoid_mode=signed). Router can flip ricker polar
 | 64 (me12) | 0.7599 | 0.7085 | **0.6275** | −0.042 vs A ⚠️2-var |
 | **256 (me16)** | 0.7635 | 0.7255 | **0.6662** | **+0.023 ✓ BEATS A** ⚠️2-var |
 | **128 (me14)** | 0.7642 | 0.7227 | **0.6605** | −0.011 vs A ⚠️2-var |
-| 1024 (me20) | 🔄 | 🔄 | 🔄 | |
+| 1024 (me20) | 0.7660 | 0.7249 | 0.6533 | −0.008 vs A (noise) ⚠️2-var |
 | 4096 (me24) | 🔄 (resubmitted after elm73 NODE_FAIL) | | | |
 | 16384 (me28) | 🔄 (resubmitted after elm73 NODE_FAIL + 3090 OOM) | | | |
 
@@ -105,13 +105,18 @@ commitment alone doesn't guarantee F1 gain.
 
 **But ρ256 signed=0.6662, +0.023 vs A-block — the FIRST case beating A-block**, and
 it's the MOST sign-committed scale (88% positive, mean +0.70..+0.73, highest
-magnitude). So among ρ64/128/256 (all strongly-positive-leaning), only the most
-decisively-committed one (ρ256) shows a real gain — suggests a threshold effect
-(commitment must be strong+consistent, not just majority) rather than "any positive
-bias helps". Still a 2-var comparison (needs noC1 ρ256 to isolate signed's own
-contribution vs deleting Clamp1) — but Clamp1 was already measured ~inert at ρ256
-(E_kept≈0.998, see clamp_utilization probe), so noC1≈A here and this +0.023 is very
-likely attributable to signed itself. **ρ256 is the standout signed result so far.**
+magnitude). Still a 2-var comparison, but Clamp1 was already measured ~inert at ρ256
+(E_kept≈0.998), so noC1≈A here and +0.023 is likely attributable to signed itself.
+
+**ρ256's win does NOT generalize — ρ1024 kills the "commitment→gain" hypothesis.**
+ρ1024 signed=0.6533 (−0.008 vs A, within noise) despite ALSO being strongly
+sign-committed (71% positive, mean +0.69..+0.80 — comparable magnitude/commitment
+to ρ256's 88%/+0.70). So high positive commitment is present at BOTH ρ256 (gain) and
+ρ1024 (no gain) — commitment level does not predict outcome. **ρ256 looks like an
+isolated local peak, not a monotonic "coarser+more-committed = better" trend.**
+Current curve (Δ vs A @L4096): ρ1 −0.022, ρ16 −0.038, ρ64 −0.042, ρ128 −0.011,
+**ρ256 +0.023**, ρ1024 −0.008. Awaiting ρ4096/ρ16384 to see if the far-coarse end
+does anything, but no mechanistic story yet explains why ρ256 specifically.
 
 **signed does NOT reliably learn the right polarity (clean at ρ1 & ρ16):**
 - **ρ1**: +bias harmful. noC1(enhance)=0.6472, signed(learns NEGATIVE, suppress BOS,
