@@ -93,8 +93,8 @@ Single-variable vs noC1 (only sigmoid_mode=signed). Router can flip ricker polar
 | **256 (me16)** | 0.7635 | 0.7255 | **0.6662** | **+0.023 ✓ BEATS A** ⚠️2-var |
 | **128 (me14)** | 0.7642 | 0.7227 | **0.6605** | −0.011 vs A ⚠️2-var |
 | 1024 (me20) | 0.7660 | 0.7249 | 0.6533 | −0.008 vs A (noise) ⚠️2-var |
-| 4096 (me24) | 🔄 (resubmitted after elm73 NODE_FAIL) | | | |
-| 16384 (me28) | 🔄 (resubmitted after elm73 NODE_FAIL + 3090 OOM) | | | |
+| 4096 (me24) | 🔄 (resubmitted after elm73 NODE_FAIL, ~63%) | | | |
+| **16384 (me28)** | 0.7600 | 0.6979 | **0.6182** | **−0.041 vs A** ⚠️2-var |
 
 **⚠️ Clean signed-vs-unsigned single-variable comparison only exists at ρ1 & ρ16**
 (both noC1 AND signed run). ρ64/128/256/1024/4096/16384 signed lack their noC1
