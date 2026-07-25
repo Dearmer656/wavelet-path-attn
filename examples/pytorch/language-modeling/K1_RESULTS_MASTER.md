@@ -91,14 +91,19 @@ Single-variable vs noC1 (only sigmoid_mode=signed). Router can flip ricker polar
 | **16 (me8)** | 0.7543 | 0.7013 | **0.6144** | −0.038 / **−0.048 ❗** ✓clean |
 | 64 (me12) | 0.7599 | 0.7085 | **0.6275** | −0.042 vs A ⚠️2-var |
 | 256 (me16) | 🔄 | 🔄 | 🔄 | |
-| 128 (me14) | 🔄 | 🔄 | 🔄 | |
+| **128 (me14)** | 0.7642 | 0.7227 | **0.6605** | −0.011 vs A ⚠️2-var |
 | 1024 (me20) | 🔄 | 🔄 | 🔄 | |
+| 4096 (me24) | 🔄 (resubmitted after elm73 NODE_FAIL) | | | |
+| 16384 (me28) | 🔄 (resubmitted after elm73 NODE_FAIL + 3090 OOM) | | | |
 
 **⚠️ Clean signed-vs-unsigned single-variable comparison only exists at ρ1 & ρ16**
-(both noC1 AND signed run). ρ64/128/256/1024 signed lack their noC1 baseline → their
-"vs A-block" mixes 2 variables (Clamp1-off + signed). ρ64 signed=0.6275 (−0.042 vs A)
-with MIXED bias sign (not clean-negative like ρ1) — possibly a bad router basin
-(basin choice is seed-stochastic, PAT-225). Don't over-read a single mid-scale drop.
+(both noC1 AND signed run). ρ64/128/256/1024/4096/16384 signed lack their noC1
+baseline → their "vs A-block" mixes 2 variables (Clamp1-off + signed). ρ64
+signed=0.6275 (−0.042 vs A) with MIXED bias sign; ρ128 signed=0.6605 (−0.011 vs A)
+DESPITE learning a strongly-committed positive bias (78% of steps positive,
+mean +0.56..+0.69) — **sign commitment doesn't translate to F1 gain**. Consistent
+with the broader pattern: any persistent non-zero bias (any sign, any commitment
+level) underperforms clamp-to-≈0 (A-block). Don't over-read a single mid-scale drop.
 
 **signed does NOT reliably learn the right polarity (clean at ρ1 & ρ16):**
 - **ρ1**: +bias harmful. noC1(enhance)=0.6472, signed(learns NEGATIVE, suppress BOS,
