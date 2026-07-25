@@ -68,10 +68,16 @@ Clamp2 → **±4.0 boxcar** (not raw Mexican-hat). Tests "delete Clamp1" effect 
 | **1 (me0)** | 0.7641 | 0.7204 | **0.6472** | **−0.033 ❗ HURTS** |
 | 4 (me4) | 0.7670 | 0.7218 | 0.6500 | +0.003 (noise) |
 | 16 (me8) | 0.7678 | 0.7337 | 0.6624 | +0.010 (mild+) |
+| 128 (me14) | 0.7638 | 0.7241 | 0.6662 | −0.005 (noise) |
+| 256 (me16) | 🔄 | | | |
+| 1024 (me20) | 🔄 | | | |
+| 2048 (me22) | 🔄 | | | |
+| 4096 (me24) | 🔄 | | | |
 
 *Scale-dependent: Clamp1-delete HURTS at ρ1 (−0.033, sharp BOS spike) but mildly HELPS
-at ρ16 (+0.010, wide scale, clamp was ~inert there E_kept=0.90). The clamp's protection
-is specific to sharp fine scales.*
+at ρ16 (+0.010, wide scale, clamp was ~inert there E_kept=0.90). At ρ128, no effect
+(−0.005, noise) — clamp1 already near-inert there. The clamp's protection is specific
+to sharp fine scales; at mid/coarse scales Clamp1 barely does anything.*
 
 **KEY: deleting Clamp1 at ρ1 HURTS L4096 by −0.033 (>> noise). The p99 clamp was
 PROTECTIVE** — it gutted ρ1's BOS-anchored spike; deleting it gives a +4.0 BOS boxcar
@@ -91,17 +97,17 @@ Single-variable vs noC1 (only sigmoid_mode=signed). Router can flip ricker polar
 | **16 (me8)** | 0.7543 | 0.7013 | **0.6144** | −0.038 / **−0.048 ❗** ✓clean |
 | 64 (me12) | 0.7599 | 0.7085 | **0.6275** | −0.042 vs A ⚠️2-var |
 | **256 (me16)** | 0.7635 | 0.7255 | **0.6662** | **+0.023 ✓ BEATS A** ⚠️2-var |
-| **128 (me14)** | 0.7642 | 0.7227 | **0.6605** | −0.011 vs A ⚠️2-var |
+| **128 (me14)** | 0.7642 | 0.7227 | **0.6605** | −0.011 vs A / **−0.0057 vs noC1(0.6662)** ✓clean(noise) |
 | 1024 (me20) | 0.7660 | 0.7249 | 0.6533 | −0.008 vs A (noise) ⚠️2-var |
-| 4096 (me24) | 🔄 (resubmitted after elm73 NODE_FAIL, ~63%) | | | |
+| 4096 (me24) | 🔄 (3rd resubmit after elm73 NODE_FAIL + elm67 CUDA/NCCL crash, queued) | | | |
 | **16384 (me28)** | 0.7600 | 0.6979 | **0.6182** | **−0.041 vs A** ⚠️2-var |
 
-**⚠️ Clean signed-vs-unsigned single-variable comparison only exists at ρ1 & ρ16**
-(both noC1 AND signed run). ρ64/128/256/1024/4096/16384 signed lack their noC1
-baseline → their "vs A-block" mixes 2 variables (Clamp1-off + signed). ρ64
-signed=0.6275 (−0.042 vs A) with MIXED bias sign; ρ128 signed=0.6605 (−0.011 vs A)
-DESPITE strongly-committed positive bias (78% positive, mean +0.56..+0.69) — sign
-commitment alone doesn't guarantee F1 gain.
+**⚠️ Clean signed-vs-unsigned single-variable comparison now exists at ρ1, ρ16, ρ128**
+(all three have both noC1 AND signed). ρ64/256/1024/4096/16384 signed still lack their
+noC1 baseline. ρ128 resolved: noC1=0.6662 (Clamp1-delete alone: −0.005 vs A, noise) and
+signed=0.6605 (vs noC1: −0.0057, noise) — **both steps are noise at ρ128**; the earlier
+"−0.011 vs A" was never a real signed effect, just accumulated noise. ρ64 signed=0.6275
+(−0.042 vs A) with MIXED bias sign — still unresolved pending noC1 ρ64.
 
 **But ρ256 signed=0.6662, +0.023 vs A-block — the FIRST case beating A-block**, and
 it's the MOST sign-committed scale (88% positive, mean +0.70..+0.73, highest
