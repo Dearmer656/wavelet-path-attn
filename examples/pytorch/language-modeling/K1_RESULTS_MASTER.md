@@ -90,7 +90,7 @@ Single-variable vs noC1 (only sigmoid_mode=signed). Router can flip ricker polar
 | **1 (me0)** | 0.7663 | 0.7229 | **0.6581** | −0.022 / **+0.011** ✓clean |
 | **16 (me8)** | 0.7543 | 0.7013 | **0.6144** | −0.038 / **−0.048 ❗** ✓clean |
 | 64 (me12) | 0.7599 | 0.7085 | **0.6275** | −0.042 vs A ⚠️2-var |
-| 256 (me16) | 🔄 | 🔄 | 🔄 | |
+| **256 (me16)** | 0.7635 | 0.7255 | **0.6662** | **+0.023 ✓ BEATS A** ⚠️2-var |
 | **128 (me14)** | 0.7642 | 0.7227 | **0.6605** | −0.011 vs A ⚠️2-var |
 | 1024 (me20) | 🔄 | 🔄 | 🔄 | |
 | 4096 (me24) | 🔄 (resubmitted after elm73 NODE_FAIL) | | | |
@@ -100,10 +100,18 @@ Single-variable vs noC1 (only sigmoid_mode=signed). Router can flip ricker polar
 (both noC1 AND signed run). ρ64/128/256/1024/4096/16384 signed lack their noC1
 baseline → their "vs A-block" mixes 2 variables (Clamp1-off + signed). ρ64
 signed=0.6275 (−0.042 vs A) with MIXED bias sign; ρ128 signed=0.6605 (−0.011 vs A)
-DESPITE learning a strongly-committed positive bias (78% of steps positive,
-mean +0.56..+0.69) — **sign commitment doesn't translate to F1 gain**. Consistent
-with the broader pattern: any persistent non-zero bias (any sign, any commitment
-level) underperforms clamp-to-≈0 (A-block). Don't over-read a single mid-scale drop.
+DESPITE strongly-committed positive bias (78% positive, mean +0.56..+0.69) — sign
+commitment alone doesn't guarantee F1 gain.
+
+**But ρ256 signed=0.6662, +0.023 vs A-block — the FIRST case beating A-block**, and
+it's the MOST sign-committed scale (88% positive, mean +0.70..+0.73, highest
+magnitude). So among ρ64/128/256 (all strongly-positive-leaning), only the most
+decisively-committed one (ρ256) shows a real gain — suggests a threshold effect
+(commitment must be strong+consistent, not just majority) rather than "any positive
+bias helps". Still a 2-var comparison (needs noC1 ρ256 to isolate signed's own
+contribution vs deleting Clamp1) — but Clamp1 was already measured ~inert at ρ256
+(E_kept≈0.998, see clamp_utilization probe), so noC1≈A here and this +0.023 is very
+likely attributable to signed itself. **ρ256 is the standout signed result so far.**
 
 **signed does NOT reliably learn the right polarity (clean at ρ1 & ρ16):**
 - **ρ1**: +bias harmful. noC1(enhance)=0.6472, signed(learns NEGATIVE, suppress BOS,
