@@ -72,10 +72,11 @@ Clamp2 → **±4.0 boxcar** (not raw Mexican-hat). Tests "delete Clamp1" effect 
 | 256 (me16) | 🔄 | | | |
 | 1024 (me20) | 🔄 | | | |
 | 2048 (me22) | 🔄 | | | |
-| 4096 (me24) | 🔄 | | | |
+| **4096 (me24)** | 0.7647 | 0.7352 | **0.6887** | **+0.024 ❗ BIGGEST noC1 GAIN** |
+| 16384 (me28) | 🔄 (queued, elm62) | | | |
 
 *Scale-dependent: Clamp1-delete HURTS at ρ1 (−0.033, sharp BOS spike) but mildly HELPS
-at ρ16 (+0.010, wide scale, clamp was ~inert there E_kept=0.90). At ρ128, no effect
+at ρ16 (+0.010) and ρ4096 (**+0.024, largest clean gain so far**), no effect at ρ128
 (−0.005, noise) — clamp1 already near-inert there. The clamp's protection is specific
 to sharp fine scales; at mid/coarse scales Clamp1 barely does anything.*
 
