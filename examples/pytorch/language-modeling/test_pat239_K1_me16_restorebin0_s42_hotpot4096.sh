@@ -16,6 +16,12 @@
 
 set -euxo pipefail
 
+export PYTHONPATH=/project/nlp-work5/hongyu-s/transformers/src:/project/nlp-work5/hongyu-s/flash-linear-attention:${PYTHONPATH:-}
+export HF_HOME=/cl/work5/hongyu-s/huggingfac
+export HF_DATASETS_CACHE=/cl/work5/hongyu-s/huggingfac/datasets
+export WANDB_DISABLED=true
+export WANDB_MODE=disabled
+
 LANG_MODEL_DIR="/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling"
 HOTPOT_LONG_DIR="${LANG_MODEL_DIR}/hotpot_long"
 JSONL="${HOTPOT_LONG_DIR}/data/hotpot_long_dev_uniform.jsonl"
