@@ -9,10 +9,10 @@
 #SBATCH --cpus-per-task=8
 
 # HotpotQA-Long L4096 (uniform) eval for job 545327 (PAT239_K1_me16_restorebin0_s42, elm43 a100x2).
-# No dependency: pinned to the exact same node+gres as the training job, so this
-# just queues (PENDING/Resources) until that job finishes and releases the 2x a100
-# GPUs on elm43, then auto-starts. Checkpoint-15000 is this recipe's final save
-# (matches the already-finished K1_me16_noC1_s42 sibling run).
+# Training 545327 actually completed and ran to checkpoint-15900 (this "restore"
+# recipe trains longer than the plain K1_me16 family), but checkpoint-15000 also
+# exists there, so we eval at 15000 to stay directly comparable with the other
+# three K1_me16 seeds/variants, which are all evaluated at that same step.
 
 set -euxo pipefail
 
