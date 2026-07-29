@@ -2,7 +2,7 @@
 #SBATCH --job-name=PAT226_mamba2_bestckpt
 #SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/pat226_mamba2/wt103_s42_bestckpt/train/%j_pat226_mamba2_wt103_bestckpt.txt
 #SBATCH --partition=gpu_long
-#SBATCH --gres=gpu:6000:4
+#SBATCH --gres=gpu:a6000:2
 #SBATCH --time=100:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
@@ -46,11 +46,11 @@ MASTER_PORT=$(( 24226 + SLURM_JOB_ID % 1000 ))
 
 echo "================= BEGIN RUN PAT-226 mamba2 wt103 pretrain s42 (bestckpt fix) ================="
 
-python -m torch.distributed.run --nproc_per_node=4 --master_port=${MASTER_PORT} ./run_clm.py \
+python -m torch.distributed.run --nproc_per_node=2 --master_port=${MASTER_PORT} ./run_clm.py \
   --model_type mamba2 --tokenizer_name gpt2 \
   --config_overrides "hidden_size=768,num_hidden_layers=24,state_size=128,expand=2,head_dim=64,num_heads=24,vocab_size=50257,tie_word_embeddings=True,bos_token_id=50256,eos_token_id=50256,pad_token_id=50256" \
   --learning_rate 1e-4 --weight_decay 0.1 \
-  --per_device_train_batch_size 16 --per_device_eval_batch_size 16 \
+  --per_device_train_batch_size 16 --per_device_eval_batch_size 16 --gradient_accumulation_steps 2 \
   --block_size 512 --dataset_name wikitext --dataset_config_name wikitext-103-raw-v1 \
   --do_train --do_eval --eval_strategy steps --eval_steps 2500 \
   --logging_dir "${RUN_OUT}/train_log" --logging_steps 500 \
