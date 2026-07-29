@@ -1,18 +1,19 @@
 #!/bin/bash
-#SBATCH --job-name=hp4096_K1s43c10
+#SBATCH --job-name=hp4096_K1s43c10_lang01
 #SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/logs/%j_hp4096_K1_me16_s43_wavelet_center10.txt
-#SBATCH --partition=gpu_long
-#SBATCH --nodelist=elm71
-#SBATCH --gres=gpu:6000:4
+#SBATCH --partition=lang_gpu_long
+#SBATCH --account=lang
+#SBATCH --gres=gpu:a100:2
 #SBATCH --time=24:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 
-# HotpotQA-Long L4096 (uniform) eval for job 545383 (PAT234_K1_me16_s43_c10, elm71 6000x4).
-# No dependency: pinned to the exact same node+gres as the training job, so this
-# just queues (PENDING/Resources) until that job finishes and releases the 4x6000
-# GPUs on elm71, then auto-starts. Checkpoint-15000 is this recipe's final save
-# (matches the already-finished K1_me16_noC1_s42 sibling run).
+# HotpotQA-Long L4096 (uniform) eval for the finished K1_me16_noC1_s43_wavelet_center10
+# checkpoint (job 545383's training, checkpoint-15000). Originally pinned to elm71
+# (the training job's node) to wait for its GPUs to free, but a rebuilt eval
+# script crashed 28s in on missing PYTHONPATH right after elm71 freed, and
+# another user's job grabbed elm71 in that window. Switched to lang01's 2x A100
+# (40GB, more headroom than the original 6000s) instead of re-queueing on elm71.
 
 set -euxo pipefail
 
@@ -40,7 +41,7 @@ mkdir -p "${OUTPUT_DIR}"
 cd "${LANG_MODEL_DIR}"
 
 MASTER_PORT=$(( 12000 + SLURM_JOB_ID % 10000 ))
-/cl/work5/hongyu-s/conda/envs/latest_transformers/bin/torchrun --nproc_per_node=4 --master_port=${MASTER_PORT} ./run_clm.py \
+/cl/work5/hongyu-s/conda/envs/latest_transformers/bin/torchrun --nproc_per_node=2 --master_port=${MASTER_PORT} ./run_clm.py \
     --model_type gpt2 \
     --tokenizer_name gpt2 \
     --model_name_or_path "${CHECKPOINT}" \
