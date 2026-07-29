@@ -3675,6 +3675,17 @@ def cfg_float(cfg: dict, key: str, default: float) -> float:
     except Exception:
         return float(default)
 
+def cfg_float_or_list(cfg: dict, key: str, default):
+    if key not in cfg:
+        return default
+    v = cfg.get(key)
+    if isinstance(v, (list, tuple)):
+        return [float(x) for x in v]
+    try:
+        return float(v)
+    except Exception:
+        return default
+
 def cfg_str(cfg: dict, key: str, default: str) -> str:
     if key not in cfg:
         return str(default)
@@ -4236,7 +4247,15 @@ def main():
         print("added:", added)
         print("skipped:", skipped)
         overridden = []
-        for _prefix in ("eval_attn_heatmap", "wavelet_mode", "wavelet_ctxscale", "wavelet_router_sigmoid", "wavelet_ctx_feat", "rel_use_layer"):
+        for _prefix in (
+            "eval_attn_heatmap",
+            "wavelet_mode",
+            "wavelet_ctxscale",
+            "wavelet_logit_bias",
+            "wavelet_router_sigmoid",
+            "wavelet_ctx_feat",
+            "rel_use_layer",
+        ):
             overridden += force_override_hf_config(config, cfg, _prefix)
         # Also force a single explicit key if present
         for _key in ("wavelet_mode", "rel_use_layer_list"):
@@ -4436,8 +4455,8 @@ def main():
         cfg, "wavelet_ctxscale_scale_mask", str(getattr(config, "wavelet_ctxscale_scale_mask", ""))
     )
     # PAT-227: grid support upper bound as log2 exponent (default 14 = production).
-    config.wavelet_ctxscale_scale_max_exp = cfg_float(
-        cfg, "wavelet_ctxscale_scale_max_exp", float(getattr(config, "wavelet_ctxscale_scale_max_exp", 14.0))
+    config.wavelet_ctxscale_scale_max_exp = cfg_float_or_list(
+        cfg, "wavelet_ctxscale_scale_max_exp", getattr(config, "wavelet_ctxscale_scale_max_exp", 14.0)
     )
     # PAT-225 seed-variance probe: inference-time per-layer knockout indices
     # (comma-separated 0-based layer indices, forced to pi_null=1 / wavelet off).
@@ -7773,7 +7792,21 @@ def main():
 
     callbacks_for_trainer = callbacks if len(callbacks) > 0 else None
 
-    trainer = Trainer(
+    class SSMAwareTrainer(Trainer):
+        # PAT-226: HF's default get_decay_parameter_names only excludes params
+        # whose name matches bias/norm patterns. Mamba2's A_log/D control SSM
+        # decay/skip dynamics and are marked `_no_weight_decay=True` on the
+        # parameter object by fla's Mamba2 mixer, but HF Trainer never reads
+        # that attribute, so a naive --weight_decay would silently decay them
+        # (the official Mamba2 recipe never does). Extend the exclusion by
+        # name instead; this is a no-op for non-mamba2 models (no param is
+        # literally named "A_log" or "D" there).
+        def get_decay_parameter_names(self, model):
+            decay_parameters = super().get_decay_parameter_names(model)
+            ssm_forbidden = re.compile(r"(?:^|\.)(A_log|D)$")
+            return [n for n in decay_parameters if not ssm_forbidden.search(n)]
+
+    trainer = SSMAwareTrainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset if training_args.do_train else None,
