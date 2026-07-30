@@ -60,6 +60,41 @@ def causal_centered_rms_amp(x: torch.Tensor, q0: int, eps: float = 0.0) -> torch
     return torch.sqrt(var).to(dtype=dtype)
 
 
+def causal_centered_peak_valley(x: torch.Tensor, q0: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Causal-centered per-row (peak, valley) for a chunk ``x`` with shape ``[..., Q, T_keys]``.
+
+    Same causal-restriction + mean-centering convention as ``causal_centered_rms_amp``
+    (future keys excluded, row mean over valid keys subtracted so a constant
+    per-row shift -- which softmax ignores -- doesn't count as a peak/valley).
+    Returns (peak, valley) each shaped ``[..., Q]``: peak = max centered value,
+    valley = min centered value, over valid keys k <= q0+i.
+    """
+    if x.dim() < 2:
+        raise ValueError(f"x must have at least 2 dims [..., Q, T], got {tuple(x.shape)}")
+    q_len = int(x.shape[-2])
+    t_keys = int(x.shape[-1])
+    if q_len <= 0 or t_keys <= 0:
+        raise ValueError(f"x has invalid chunk/key shape {tuple(x.shape)}")
+
+    device = x.device
+    dtype = torch.float32 if not torch.is_floating_point(x) else x.dtype
+    xf = x.to(dtype=torch.float32)
+    q_abs = torch.arange(int(q0), int(q0) + q_len, device=device).view(q_len, 1)
+    k_idx = torch.arange(t_keys, device=device).view(1, t_keys)
+    mask = (k_idx <= q_abs)
+    expand_shape = (1,) * (xf.dim() - 2) + mask.shape
+    mask_b = mask.view(expand_shape)
+    count = mask_b.to(torch.float32).sum(dim=-1).clamp_min(1.0)
+
+    mean = (xf * mask_b.to(torch.float32)).sum(dim=-1) / count
+    centered = xf - mean.unsqueeze(-1)
+    neg_inf = torch.finfo(torch.float32).min
+    pos_inf = torch.finfo(torch.float32).max
+    peak = torch.where(mask_b, centered, torch.full_like(centered, neg_inf)).amax(dim=-1)
+    valley = torch.where(mask_b, centered, torch.full_like(centered, pos_inf)).amin(dim=-1)
+    return peak.to(dtype=dtype), valley.to(dtype=dtype)
+
+
 def component_weighted_upper_bound_amp(
     basis_by_scale: torch.Tensor,
     pi_scale: torch.Tensor,
@@ -514,6 +549,7 @@ def collect_layer_amplitudes(layer: Any, t: int) -> List[Dict[str, Any]]:
         amp_post = causal_centered_rms_amp(mixture_post, q0=q0)
         amp_s4pre = causal_centered_rms_amp(s4pre_by_q[q0], q0=q0)
         amp_eff = causal_centered_rms_amp(s4post_by_q[q0], q0=q0)
+        peak_eff, valley_eff = causal_centered_peak_valley(s4post_by_q[q0], q0=q0)
         if not bool((amp_pre <= amp_component + 5e-5).all()):
             diff = (amp_pre - amp_component).max().item()
             raise AssertionError(f"Convexity check failed in layer {getattr(layer, 'layer_idx', '?')} q0={q0}: max diff {diff}")
@@ -528,6 +564,8 @@ def collect_layer_amplitudes(layer: Any, t: int) -> List[Dict[str, Any]]:
                     "mixture_post_amp": amp_post[b].numpy().astype(np.float32),
                     "s4pre_amp": amp_s4pre[b].numpy().astype(np.float32),
                     "effective_amp": amp_eff[b].numpy().astype(np.float32),
+                    "effective_peak": peak_eff[b].numpy().astype(np.float32),
+                    "effective_valley": valley_eff[b].numpy().astype(np.float32),
                 }
             )
     return rows
@@ -588,6 +626,8 @@ def explode_query_arrays(raw_df: pd.DataFrame, meta_cols: Sequence[str]) -> pd.D
         "mixture_post_amp",
         "s4pre_amp",
         "effective_amp",
+        "effective_peak",
+        "effective_valley",
     ]
     for _, row in raw_df.iterrows():
         n = len(row["effective_amp"])
@@ -606,20 +646,21 @@ def aggregate(raw_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
     by_layer_rows = []
     for keys, grp in flat.groupby(["checkpoint_step", "model_variant", "num_samples", "eval_length", "layer"], sort=True):
         d = dict(zip(["checkpoint_step", "model_variant", "num_samples", "eval_length", "layer"], keys))
-        for m in ("component_weighted_amp", "mixture_pre_amp", "mixture_post_amp", "effective_amp"):
+        for m in ("component_weighted_amp", "mixture_pre_amp", "mixture_post_amp", "effective_amp", "effective_peak", "effective_valley"):
             stats = summarize_values(grp[m].to_numpy())
             d[f"{m}_mean"] = stats["mean"]
             d[f"{m}_median"] = stats["median"]
             d[f"{m}_p25"] = stats["p25"]
             d[f"{m}_p75"] = stats["p75"]
         d["cancellation_ratio_mean"] = float(d["mixture_pre_amp_mean"] / max(d["component_weighted_amp_mean"], 1e-12))
+        d["peak_to_valley_range_mean"] = float(d["effective_peak_mean"] - d["effective_valley_mean"])
         by_layer_rows.append(d)
     by_layer = pd.DataFrame(by_layer_rows)
 
     summary_rows = []
     for keys, grp in by_layer.groupby(["checkpoint_step", "model_variant", "num_samples", "eval_length"], sort=True):
         d = dict(zip(["checkpoint_step", "model_variant", "num_samples", "eval_length"], keys))
-        for m in ("component_weighted_amp", "mixture_pre_amp", "mixture_post_amp", "effective_amp"):
+        for m in ("component_weighted_amp", "mixture_pre_amp", "mixture_post_amp", "effective_amp", "effective_peak", "effective_valley"):
             d[f"{m}_mean"] = float(grp[f"{m}_mean"].mean())
         eff_flat = flat[
             (flat["checkpoint_step"] == d["checkpoint_step"])
@@ -631,9 +672,10 @@ def aggregate(raw_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
         d["effective_amp_p25"] = eff_stats["p25"]
         d["effective_amp_p75"] = eff_stats["p75"]
         d["cancellation_ratio_mean"] = float(d["mixture_pre_amp_mean"] / max(d["component_weighted_amp_mean"], 1e-12))
+        d["peak_to_valley_range_mean"] = float(d["effective_peak_mean"] - d["effective_valley_mean"])
         summary_rows.append(d)
     summary = pd.DataFrame(summary_rows)
-    for col in ("k4_pre_vs_k1", "k4_post_vs_k1", "k4_effective_vs_k1"):
+    for col in ("k4_pre_vs_k1", "k4_post_vs_k1", "k4_effective_vs_k1", "k4_peak_vs_k1", "k4_valley_vs_k1", "k4_range_vs_k1"):
         summary[col] = np.nan
     for (step, length), grp in summary.groupby(["checkpoint_step", "eval_length"]):
         k1 = grp[grp["model_variant"] == "K1"]
@@ -643,10 +685,16 @@ def aggregate(raw_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
         k1_pre = float(k1.iloc[0]["mixture_pre_amp_mean"])
         k1_post = float(k1.iloc[0]["mixture_post_amp_mean"])
         k1_eff = float(k1.iloc[0]["effective_amp_mean"])
+        k1_peak = float(k1.iloc[0]["effective_peak_mean"])
+        k1_valley = float(k1.iloc[0]["effective_valley_mean"])
+        k1_range = float(k1.iloc[0]["peak_to_valley_range_mean"])
         for idx in k4_idx:
             summary.loc[idx, "k4_pre_vs_k1"] = float(summary.loc[idx, "mixture_pre_amp_mean"] / max(k1_pre, 1e-12))
             summary.loc[idx, "k4_post_vs_k1"] = float(summary.loc[idx, "mixture_post_amp_mean"] / max(k1_post, 1e-12))
             summary.loc[idx, "k4_effective_vs_k1"] = float(summary.loc[idx, "effective_amp_mean"] / max(k1_eff, 1e-12))
+            summary.loc[idx, "k4_peak_vs_k1"] = float(summary.loc[idx, "effective_peak_mean"] / max(k1_peak, 1e-12))
+            summary.loc[idx, "k4_valley_vs_k1"] = float(summary.loc[idx, "effective_valley_mean"] / min(k1_valley, -1e-12))
+            summary.loc[idx, "k4_range_vs_k1"] = float(summary.loc[idx, "peak_to_valley_range_mean"] / max(k1_range, 1e-12))
     columns = [
         "checkpoint_step",
         "model_variant",
@@ -659,10 +707,16 @@ def aggregate(raw_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
         "effective_amp_median",
         "effective_amp_p25",
         "effective_amp_p75",
+        "effective_peak_mean",
+        "effective_valley_mean",
+        "peak_to_valley_range_mean",
         "cancellation_ratio_mean",
         "k4_pre_vs_k1",
         "k4_post_vs_k1",
         "k4_effective_vs_k1",
+        "k4_peak_vs_k1",
+        "k4_valley_vs_k1",
+        "k4_range_vs_k1",
     ]
     return summary[columns].sort_values(["eval_length", "checkpoint_step", "model_variant"]), by_layer.sort_values(
         ["eval_length", "checkpoint_step", "model_variant", "layer"]
@@ -723,6 +777,25 @@ def plot_summary(summary: pd.DataFrame, output_dir: Path, eval_length: int, num_
         if int(eval_length) == int(sub["eval_length"].min()):
             fig.savefig(output_dir / "k1_vs_k4_checkpoint_amp_ratios.png", dpi=150)
         plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    for variant, style in (("K1", "-"), ("K4", "--")):
+        g = sub[sub["model_variant"] == variant].sort_values("checkpoint_step")
+        if g.empty:
+            continue
+        ax.plot(g["checkpoint_step"], g["effective_peak_mean"], linestyle=style, marker="^", color="tab:red", label=f"{variant} peak")
+        ax.plot(g["checkpoint_step"], g["effective_valley_mean"], linestyle=style, marker="v", color="tab:blue", label=f"{variant} valley")
+    ax.axhline(0.0, color="black", linewidth=0.8)
+    ax.set_xlabel("Checkpoint step")
+    ax.set_ylabel("Causal-centered peak / valley (post-gate effective bias)")
+    ax.set_title(f"K1 vs K4 post-gate effective-bias peak/valley, eval_length={eval_length}, num_samples={num_samples}")
+    ax.legend()
+    ax.grid(True, alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(output_dir / f"k1_vs_k4_peak_valley_L{eval_length}.png", dpi=150)
+    if int(eval_length) == int(sub["eval_length"].min()):
+        fig.savefig(output_dir / "k1_vs_k4_peak_valley.png", dpi=150)
+    plt.close(fig)
 
 
 def write_report(summary: pd.DataFrame, output_dir: Path, files_created: Sequence[str], warnings: Sequence[str]) -> None:

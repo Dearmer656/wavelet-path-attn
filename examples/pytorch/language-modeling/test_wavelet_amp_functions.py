@@ -2,7 +2,51 @@ import math
 
 import torch
 
-from analyze_k1_k4_wavelet_amp import causal_centered_rms_amp, component_weighted_upper_bound_amp
+from analyze_k1_k4_wavelet_amp import (
+    causal_centered_peak_valley,
+    causal_centered_rms_amp,
+    component_weighted_upper_bound_amp,
+)
+
+
+def test_causal_centered_peak_valley_known_values_and_future_exclusion():
+    x = torch.tensor(
+        [
+            [
+                [10.0, 999.0, 999.0],
+                [1.0, 3.0, 999.0],
+                [2.0, 4.0, 6.0],
+            ]
+        ]
+    )
+    peak, valley = causal_centered_peak_valley(x, q0=0)
+    # q=0: single valid key -> centered value is 0 for both peak and valley.
+    assert torch.allclose(peak[0, 0], torch.tensor(0.0))
+    assert torch.allclose(valley[0, 0], torch.tensor(0.0))
+    # q=1: valid keys [1.0, 3.0], mean=2.0 -> centered [-1.0, 1.0].
+    assert torch.allclose(peak[0, 1], torch.tensor(1.0))
+    assert torch.allclose(valley[0, 1], torch.tensor(-1.0))
+    # q=2: valid keys [2.0, 4.0, 6.0], mean=4.0 -> centered [-2.0, 0.0, 2.0].
+    assert torch.allclose(peak[0, 2], torch.tensor(2.0))
+    assert torch.allclose(valley[0, 2], torch.tensor(-2.0))
+
+    # Changing a future (non-causal) key must not affect peak/valley at q=1.
+    x_changed_future = x.clone()
+    x_changed_future[0, 1, 2] = -99999.0
+    peak_changed, valley_changed = causal_centered_peak_valley(x_changed_future, q0=0)
+    assert torch.allclose(peak[0, 1], peak_changed[0, 1])
+    assert torch.allclose(valley[0, 1], valley_changed[0, 1])
+
+
+def test_causal_centered_peak_valley_translation_invariance():
+    x = torch.tensor([[[1.0, 3.0, 5.0], [2.0, 6.0, 10.0]]])
+    shifted = x.clone()
+    shifted[:, 0, :] += 17.0
+    shifted[:, 1, :] -= 12.0
+    peak, valley = causal_centered_peak_valley(x, q0=0)
+    peak_s, valley_s = causal_centered_peak_valley(shifted, q0=0)
+    assert torch.allclose(peak, peak_s)
+    assert torch.allclose(valley, valley_s)
 
 
 def test_causal_centered_rms_known_values_and_future_exclusion():
