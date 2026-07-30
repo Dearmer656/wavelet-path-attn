@@ -2,7 +2,7 @@
 #SBATCH --job-name=k1k4_amp_sanity
 #SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/logs/%j_k1k4_amp_sanity.txt
 #SBATCH --partition=gpu_long
-#SBATCH --gres=gpu:6000:1
+#SBATCH --gres=gpu:3090:1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --time=2:00:00
