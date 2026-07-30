@@ -359,22 +359,39 @@ def load_model_for_analysis(checkpoint_dir: Path, run_dir: Path, device: str, dt
     return LoadedModel(model=model, tokenizer=tokenizer, layers=layers, manifest=manifest)
 
 
-def build_eval_samples(tokenizer: Any, eval_length: int, num_samples: int, seed: int, cache_dir: Optional[str] = None) -> torch.Tensor:
+def _tokenize_split_ids(tokenizer: Any, split: str, cache_dir: Optional[str]) -> List[int]:
     from datasets import load_dataset
 
-    raw = load_dataset("wikitext", "wikitext-103-raw-v1", split="validation", cache_dir=cache_dir)
+    raw = load_dataset("wikitext", "wikitext-103-raw-v1", split=split, cache_dir=cache_dir)
     text_col = "text"
 
     def tokenize_function(examples):
         return tokenizer(examples[text_col], add_special_tokens=True)
 
-    tokenized = raw.map(tokenize_function, batched=True, remove_columns=raw.column_names, desc="Tokenizing wikitext validation")
+    tokenized = raw.map(tokenize_function, batched=True, remove_columns=raw.column_names, desc=f"Tokenizing wikitext {split}")
     all_ids: List[int] = []
     for ids in tokenized["input_ids"]:
         all_ids.extend(ids)
+    return all_ids
+
+
+def build_eval_samples(tokenizer: Any, eval_length: int, num_samples: int, seed: int, cache_dir: Optional[str] = None) -> torch.Tensor:
+    # `validation` alone is enough at short lengths (e.g. 512) but runs out of
+    # non-overlapping chunks at longer lengths (2048/4096) for num_samples=128;
+    # fall back to appending `train` tokens only when validation isn't enough,
+    # so the L512 sample set (already validated) is completely unaffected.
+    all_ids = _tokenize_split_ids(tokenizer, "validation", cache_dir)
     total = (len(all_ids) // int(eval_length)) * int(eval_length)
+    n_chunks = total // int(eval_length)
+    if n_chunks < int(num_samples):
+        print(
+            f"[build_eval_samples] validation split only yields {n_chunks} chunks at "
+            f"eval_length={eval_length} (< {num_samples} requested); appending train split tokens."
+        )
+        all_ids = all_ids + _tokenize_split_ids(tokenizer, "train", cache_dir)
+        total = (len(all_ids) // int(eval_length)) * int(eval_length)
     if total < int(eval_length):
-        raise RuntimeError(f"Not enough validation tokens for eval_length={eval_length}")
+        raise RuntimeError(f"Not enough tokens for eval_length={eval_length}")
     chunks = np.asarray(all_ids[:total], dtype=np.int64).reshape(-1, int(eval_length))
     if len(chunks) < num_samples:
         raise RuntimeError(f"Requested {num_samples} samples, but only {len(chunks)} chunks are available")
