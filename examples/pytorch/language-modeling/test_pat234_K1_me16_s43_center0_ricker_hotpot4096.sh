@@ -2,17 +2,16 @@
 #SBATCH --job-name=hp4096_K1s43c0
 #SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/logs/%j_hp4096_K1_me16_s43_center0_ricker.txt
 #SBATCH --partition=gpu_long
-#SBATCH --nodelist=elm64
-#SBATCH --gres=gpu:a6000:2
+#SBATCH --nodelist=elm71
+#SBATCH --gres=gpu:6000:4
 #SBATCH --time=24:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 
-# HotpotQA-Long L4096 (uniform) eval for job 545335 (PAT234_K1_me16_s43_c0_ricker, elm64 a6000x2).
-# No dependency: pinned to the exact same node+gres as the training job, so this
-# just queues (PENDING/Resources) until that job finishes and releases the 2x a6000
-# GPUs on elm64, then auto-starts. Checkpoint-15000 is this recipe's final save
-# (matches the already-finished K1_me16_noC1_s42 sibling run).
+# HotpotQA-Long L4096 (uniform) eval for the K1_me16_noC1_s43_center0_ricker
+# checkpoint (training 545335 on elm64 already finished, checkpoint-15000
+# exists). Moved to elm71 (4x6000, currently idle) at user's request instead
+# of waiting on elm64.
 
 set -euxo pipefail
 
@@ -40,7 +39,7 @@ mkdir -p "${OUTPUT_DIR}"
 cd "${LANG_MODEL_DIR}"
 
 MASTER_PORT=$(( 12000 + SLURM_JOB_ID % 10000 ))
-/cl/work5/hongyu-s/conda/envs/latest_transformers/bin/torchrun --nproc_per_node=2 --master_port=${MASTER_PORT} ./run_clm.py \
+/cl/work5/hongyu-s/conda/envs/latest_transformers/bin/torchrun --nproc_per_node=4 --master_port=${MASTER_PORT} ./run_clm.py \
     --model_type gpt2 \
     --tokenizer_name gpt2 \
     --model_name_or_path "${CHECKPOINT}" \
