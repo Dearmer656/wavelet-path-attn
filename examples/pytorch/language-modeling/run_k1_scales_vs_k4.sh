@@ -3,7 +3,7 @@
 #SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/logs/%j_k1_scales_vs_k4.txt
 #SBATCH --partition=gpu_long
 #SBATCH --nodelist=elm26
-#SBATCH --gres=gpu:6000:1
+#SBATCH --gres=gpu:q6000:1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --time=4:00:00
