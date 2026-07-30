@@ -144,12 +144,35 @@ def save_json(path: Path, obj) -> None:
     tmp.replace(path)
 
 
+MAX_LOG_BYTES = 100 * 1024 * 1024  # 100MB
+TRIM_LOG_BYTES = 10 * 1024 * 1024  # 10MB
+
+
+def trim_log_if_needed(log_path: Path, max_bytes: int = MAX_LOG_BYTES, trim_bytes: int = TRIM_LOG_BYTES) -> None:
+    """If log_path exceeds max_bytes, drop the oldest ~trim_bytes from the front
+    (rounded to the next newline so no line is left half-written)."""
+    if not log_path.exists():
+        return
+    size = log_path.stat().st_size
+    if size <= max_bytes:
+        return
+    with log_path.open("rb") as f:
+        f.seek(trim_bytes)
+        rest = f.read()
+    nl = rest.find(b"\n")
+    if nl != -1:
+        rest = rest[nl + 1 :]
+    with log_path.open("wb") as f:
+        f.write(rest)
+
+
 def log_line(log_path: Path, msg: str) -> None:
     ts = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
     line = f"[{ts}] {msg}"
     print(line, flush=True)
     with log_path.open("a", encoding="utf-8") as f:
         f.write(line + "\n")
+    trim_log_if_needed(log_path)
 
 
 def poll_once(state_path: Path, history_path: Path, log_path: Path) -> None:
