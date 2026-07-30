@@ -52,7 +52,7 @@ MASTER_PORT=$(( 12000 + SLURM_JOB_ID % 10000 ))
     --hotpot_long_lengths ${BLOCK_SIZE} \
     --do_eval \
     --block_size ${BLOCK_SIZE} \
-    --per_device_eval_batch_size 2 \
+    --per_device_eval_batch_size 4 \
     --path_attn_impl pytorch \
     --report_to none \
     --output_dir "${OUTPUT_DIR}" \
