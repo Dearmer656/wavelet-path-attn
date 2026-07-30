@@ -2,7 +2,7 @@
 #SBATCH --job-name=k1scales_vs_k4
 #SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/logs/%j_k1_scales_vs_k4.txt
 #SBATCH --partition=gpu_long
-#SBATCH --gres=gpu:6000:1
+#SBATCH --gres=gpu:3090:1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --time=4:00:00
