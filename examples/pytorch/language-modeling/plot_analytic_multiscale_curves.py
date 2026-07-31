@@ -12,7 +12,9 @@ GPU needed.
   basis_s(k)            = ricker((k - beta) / s), beta = 0
   context-length RMS     = basis_s / sqrt(mean_k(basis_s(k)^2) + eps)   [path_attn.py:5822-5825, mask=None -> full T]
 
-K1: single scale (me=16, rho=256) -- just the normalized curve, plotted alone.
+K1: one standalone (single scale, unweighted) curve PER SCALE THAT K5
+INCLUDES (me=8,12,16,20,24) -- not just a single me=16 reference -- so each
+K5 component scale has its own K1-equivalent curve to compare against.
 K2/K4/K5: each scale's normalized curve summed with an ADJUSTABLE weight per
 scale (--k2_weights / --k4_weights / --k5_weights; default: all-ones, i.e.
 equal/unweighted, matching the earlier unweighted-sum comparison -- change
@@ -33,11 +35,14 @@ from typing import Dict, List, Sequence
 import numpy as np
 
 ME_GRID: Dict[str, List[int]] = {
-    "K1": [16],
     "K2": [16, 24],
     "K4": [8, 16, 20, 24],
     "K5": [8, 12, 16, 20, 24],
 }
+# K1 is plotted once per scale that K5 includes (not just a single me=16
+# reference), so each K5 component scale has its own standalone K1-style
+# (single scale, unweighted) curve to compare against.
+K1_ME_VALUES: List[int] = ME_GRID["K5"]
 
 
 def me_to_rho(me: int) -> float:
@@ -101,20 +106,32 @@ def main() -> None:
 
     rhos = {name: [me_to_rho(me) for me in mes] for name, mes in ME_GRID.items()}
 
-    curves: Dict[str, np.ndarray] = {
-        "K1": center(basis_curve(rhos["K1"][0], args.t, args.beta)),
-        "K2": center(weighted_sum_curve(rhos["K2"], k2_w, args.t, args.beta)),
-        "K4": center(weighted_sum_curve(rhos["K4"], k4_w, args.t, args.beta)),
-        "K5": center(weighted_sum_curve(rhos["K5"], k5_w, args.t, args.beta)),
-    }
-    weights_used = {"K1": [1.0], "K2": k2_w, "K4": k4_w, "K5": k5_w}
+    curves: Dict[str, np.ndarray] = {}
+    weights_used: Dict[str, List[float]] = {}
+    me_grid_used: Dict[str, List[int]] = {}
+    rho_grid_used: Dict[str, List[float]] = {}
 
-    manifest = {"t": args.t, "beta": args.beta, "eps": args.eps, "me_grid": ME_GRID, "rho_grid": rhos, "weights": weights_used, "peaks": {}, "valleys": {}}
+    for me in K1_ME_VALUES:
+        rho = me_to_rho(me)
+        name = f"K1(me={me})"
+        curves[name] = center(basis_curve(rho, args.t, args.beta))
+        weights_used[name] = [1.0]
+        me_grid_used[name] = [me]
+        rho_grid_used[name] = [rho]
+
+    curves["K2"] = center(weighted_sum_curve(rhos["K2"], k2_w, args.t, args.beta))
+    curves["K4"] = center(weighted_sum_curve(rhos["K4"], k4_w, args.t, args.beta))
+    curves["K5"] = center(weighted_sum_curve(rhos["K5"], k5_w, args.t, args.beta))
+    weights_used.update({"K2": k2_w, "K4": k4_w, "K5": k5_w})
+    me_grid_used.update({"K2": ME_GRID["K2"], "K4": ME_GRID["K4"], "K5": ME_GRID["K5"]})
+    rho_grid_used.update({"K2": rhos["K2"], "K4": rhos["K4"], "K5": rhos["K5"]})
+
+    manifest = {"t": args.t, "beta": args.beta, "eps": args.eps, "me_grid": me_grid_used, "rho_grid": rho_grid_used, "weights": weights_used, "peaks": {}, "valleys": {}}
     for name, curve in curves.items():
         peak_pos, valley_pos = int(curve.argmax()), int(curve.argmin())
         manifest["peaks"][name] = {"value": float(curve[peak_pos]), "k": peak_pos}
         manifest["valleys"][name] = {"value": float(curve[valley_pos]), "k": valley_pos}
-        print(f"{name}: rho={rhos[name]} weights={weights_used[name]} peak={curve[peak_pos]:.4f}@k={peak_pos} valley={curve[valley_pos]:.4f}@k={valley_pos}")
+        print(f"{name}: rho={rho_grid_used[name]} weights={weights_used[name]} peak={curve[peak_pos]:.4f}@k={peak_pos} valley={curve[valley_pos]:.4f}@k={valley_pos}")
 
     (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     np.savez(output_dir / "curves.npz", **curves)
@@ -129,7 +146,7 @@ def main() -> None:
     for i, (name, curve) in enumerate(curves.items()):
         color = colors[i % len(colors)]
         x = np.arange(len(curve))
-        me_str = ",".join(str(m) for m in ME_GRID[name])
+        me_str = ",".join(str(m) for m in me_grid_used[name])
         w_str = ",".join(f"{w:g}" for w in weights_used[name])
         label = f"{name} (me=[{me_str}], w=[{w_str}])"
         ax.plot(x, curve, label=label, color=color, linewidth=1.5)
