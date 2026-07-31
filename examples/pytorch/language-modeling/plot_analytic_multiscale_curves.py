@@ -23,6 +23,13 @@ these to see how re-weighting the scales reshapes the combined curve).
 Peak and valley of each (row-mean-centered, matching the causal-centered
 convention used throughout this analysis suite -- softmax ignores a
 constant per-row shift) curve are marked.
+
+Also produces a second figure (order_of_operations_comparison.png) for
+K2/K4/K5 comparing the two possible orderings, same weights held fixed:
+  - normalize-then-sum:  sum_i  w_i * RMS_normalize(basis_i)   [the main figure]
+  - sum-then-normalize:  RMS_normalize( sum_i  w_i * basis_i )
+These are NOT generally equal -- RMS-normalization is nonlinear w.r.t.
+summation -- so this panel shows how much the order actually matters.
 """
 
 from __future__ import annotations
@@ -60,18 +67,35 @@ def context_length_rms_normalize(x: np.ndarray, eps: float = 1e-6) -> np.ndarray
     return x / denom
 
 
-def basis_curve(rho: float, t: int, beta: float = 0.0) -> np.ndarray:
+def raw_basis_curve(rho: float, t: int, beta: float = 0.0) -> np.ndarray:
+    """Un-normalized Ricker basis for one scale -- no RMS applied."""
     k = np.arange(t, dtype=np.float64)
     u = (k - beta) / rho
-    raw = ricker(u)
-    return context_length_rms_normalize(raw)
+    return ricker(u)
+
+
+def basis_curve(rho: float, t: int, beta: float = 0.0) -> np.ndarray:
+    return context_length_rms_normalize(raw_basis_curve(rho, t, beta))
 
 
 def weighted_sum_curve(rhos: Sequence[float], weights: Sequence[float], t: int, beta: float = 0.0) -> np.ndarray:
+    """RMS-normalize each scale FIRST, then weighted-sum (norm-then-sum)."""
     if len(rhos) != len(weights):
         raise ValueError(f"got {len(rhos)} scales but {len(weights)} weights")
     curves = [basis_curve(rho, t, beta) for rho in rhos]
     return sum(w * c for w, c in zip(weights, curves))
+
+
+def sum_then_rms_curve(rhos: Sequence[float], weights: Sequence[float], t: int, beta: float = 0.0) -> np.ndarray:
+    """Weighted-sum the RAW (un-normalized) per-scale bases FIRST, then apply
+    ONE context-length RMS normalization to the summed result (sum-then-norm) --
+    the opposite order from weighted_sum_curve, and NOT generally equivalent
+    to it since RMS-normalization is nonlinear w.r.t. summation."""
+    if len(rhos) != len(weights):
+        raise ValueError(f"got {len(rhos)} scales but {len(weights)} weights")
+    raw_curves = [raw_basis_curve(rho, t, beta) for rho in rhos]
+    summed = sum(w * c for w, c in zip(weights, raw_curves))
+    return context_length_rms_normalize(summed)
 
 
 def center(curve: np.ndarray) -> np.ndarray:
@@ -122,9 +146,16 @@ def main() -> None:
     curves["K2"] = center(weighted_sum_curve(rhos["K2"], k2_w, args.t, args.beta))
     curves["K4"] = center(weighted_sum_curve(rhos["K4"], k4_w, args.t, args.beta))
     curves["K5"] = center(weighted_sum_curve(rhos["K5"], k5_w, args.t, args.beta))
-    weights_used.update({"K2": k2_w, "K4": k4_w, "K5": k5_w})
-    me_grid_used.update({"K2": ME_GRID["K2"], "K4": ME_GRID["K4"], "K5": ME_GRID["K5"]})
-    rho_grid_used.update({"K2": rhos["K2"], "K4": rhos["K4"], "K5": rhos["K5"]})
+    # Opposite order: weighted-sum the RAW bases first, THEN RMS-normalize the
+    # sum once (not generally equal to the norm-then-sum curves above).
+    curves["K2_sum_then_rms"] = center(sum_then_rms_curve(rhos["K2"], k2_w, args.t, args.beta))
+    curves["K4_sum_then_rms"] = center(sum_then_rms_curve(rhos["K4"], k4_w, args.t, args.beta))
+    curves["K5_sum_then_rms"] = center(sum_then_rms_curve(rhos["K5"], k5_w, args.t, args.beta))
+    weights_by_base = {"K2": k2_w, "K4": k4_w, "K5": k5_w}
+    for base_name, w in weights_by_base.items():
+        weights_used[base_name] = weights_used[f"{base_name}_sum_then_rms"] = w
+        me_grid_used[base_name] = me_grid_used[f"{base_name}_sum_then_rms"] = ME_GRID[base_name]
+        rho_grid_used[base_name] = rho_grid_used[f"{base_name}_sum_then_rms"] = rhos[base_name]
 
     manifest = {"t": args.t, "beta": args.beta, "eps": args.eps, "me_grid": me_grid_used, "rho_grid": rho_grid_used, "weights": weights_used, "peaks": {}, "valleys": {}}
     for name, curve in curves.items():
@@ -141,10 +172,7 @@ def main() -> None:
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    fig, ax = plt.subplots(figsize=(14, 7))
-    colors = plt.cm.tab10.colors
-    for i, (name, curve) in enumerate(curves.items()):
-        color = colors[i % len(colors)]
+    def draw_curve(ax, name, curve, color):
         x = np.arange(len(curve))
         me_str = ",".join(str(m) for m in me_grid_used[name])
         w_str = ",".join(f"{w:g}" for w in weights_used[name])
@@ -155,6 +183,13 @@ def main() -> None:
         ax.scatter([valley_pos], [curve[valley_pos]], marker="v", s=90, color=color, edgecolor="black", zorder=5)
         ax.annotate(f"{name} peak {curve[peak_pos]:.3f}", (peak_pos, curve[peak_pos]), textcoords="offset points", xytext=(4, 6), fontsize=8, color=color)
         ax.annotate(f"{name} valley {curve[valley_pos]:.3f}", (valley_pos, curve[valley_pos]), textcoords="offset points", xytext=(4, -12), fontsize=8, color=color)
+
+    # --- Figure 1: main comparison (norm-then-sum only, no sum_then_rms entries) ---
+    main_names = [n for n in curves if not n.endswith("_sum_then_rms")]
+    fig, ax = plt.subplots(figsize=(14, 7))
+    colors = plt.cm.tab10.colors
+    for i, name in enumerate(main_names):
+        draw_curve(ax, name, curves[name], colors[i % len(colors)])
     ax.axhline(0.0, color="black", linewidth=0.6)
     ax.set_xlabel("Key position k")
     ax.set_ylabel("Context-length-RMS-normalized basis, weighted sum, row-centered")
@@ -164,6 +199,23 @@ def main() -> None:
     fig.tight_layout()
     fig.savefig(output_dir / "analytic_multiscale_curves.png", dpi=150)
     plt.close(fig)
+
+    # --- Figure 2: order-of-operations comparison, norm-then-sum vs sum-then-rms,
+    # one panel per K value (holding the same weights fixed in both orderings). ---
+    fig2, axes2 = plt.subplots(1, 3, figsize=(21, 6), sharey=False)
+    for ax, base_name in zip(axes2, ("K2", "K4", "K5")):
+        draw_curve(ax, base_name, curves[base_name], "tab:blue")
+        draw_curve(ax, f"{base_name}_sum_then_rms", curves[f"{base_name}_sum_then_rms"], "tab:red")
+        ax.axhline(0.0, color="black", linewidth=0.6)
+        ax.set_xlabel("Key position k")
+        ax.set_title(f"{base_name}: RMS-then-sum (blue) vs sum-then-RMS (red)")
+        ax.legend(loc="upper right", fontsize=8)
+        ax.grid(True, alpha=0.25)
+    axes2[0].set_ylabel("Row-centered curve value")
+    fig2.suptitle(f"Order of operations: normalize-then-sum vs sum-then-normalize, T={args.t}, beta={args.beta}")
+    fig2.tight_layout()
+    fig2.savefig(output_dir / "order_of_operations_comparison.png", dpi=150)
+    plt.close(fig2)
 
     print(f"Done. Outputs written under {output_dir}")
 
