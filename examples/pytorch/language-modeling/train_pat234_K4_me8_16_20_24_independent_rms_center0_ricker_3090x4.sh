@@ -85,7 +85,7 @@ python -m torch.distributed.run --nproc_per_node=4 --master_port="${MASTER_PORT}
   --share_freq_across_heads True \
   --learning_rate 1e-4 \
   --weight_decay 0.0 \
-  --per_device_train_batch_size 16 \
+  --per_device_train_batch_size 8 \
   --per_device_eval_batch_size 16 \
   --block_size 512 \
   --dataset_name mix \
@@ -106,7 +106,7 @@ python -m torch.distributed.run --nproc_per_node=4 --master_port="${MASTER_PORT}
   --path_conv_bias false \
   --output_dir "${RUN_OUT}" \
   --overwrite_output_dir \
-  --gradient_accumulation_steps 1 \
+  --gradient_accumulation_steps 2 \
   --b_unfreeze_step 5000 \
   --pe_method no_pe \
   --single_A_B True \
