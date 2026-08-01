@@ -32,7 +32,8 @@ CHECKPOINT_STEPS = [2500, 5000, 7500, 10000, 12500, 15000]
 
 
 def collect_g0_gate(run_dir: Path, ckpt_dir: Path, device: str, dtype_name: str,
-                     eval_length: int, num_samples: int, seed: int, cache_dir: str | None) -> np.ndarray:
+                     eval_length: int, num_samples: int, seed: int, cache_dir: str | None,
+                     micro_batch_size: int = 8) -> np.ndarray:
     """Returns array of shape [num_layers, eval_length], averaged over batch."""
     loaded = load_model_for_analysis(ckpt_dir, run_dir, device=device, dtype_name=dtype_name)
     layers = loaded.layers
@@ -45,7 +46,7 @@ def collect_g0_gate(run_dir: Path, ckpt_dir: Path, device: str, dtype_name: str,
     )
     accum = np.zeros((num_layers, eval_length), dtype=np.float64)
     count = 0
-    bs = 8
+    bs = int(micro_batch_size)
     with torch.no_grad():
         for start in range(0, batches.shape[0], bs):
             chunk = batches[start:start + bs].to(device)
@@ -134,6 +135,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device", type=str, default="cuda")
     p.add_argument("--dtype", type=str, default="float32")
     p.add_argument("--cache_dir", type=str, default=None)
+    p.add_argument("--micro_batch_size", type=int, default=8)
     return p.parse_args()
 
 
@@ -160,6 +162,7 @@ def main() -> None:
             num_samples=args.num_samples,
             seed=args.seed,
             cache_dir=args.cache_dir,
+            micro_batch_size=args.micro_batch_size,
         )
         matrices[step] = mat
         np.save(output_dir / f"g0_gate_ckpt{step}.npy", mat)
