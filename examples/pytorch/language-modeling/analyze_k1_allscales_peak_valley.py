@@ -46,10 +46,13 @@ RUN_DIRS: List[Tuple[str, str]] = [
 
 def collect_peak_valley(run_dir: Path, ckpt_dir: Path, device: str, dtype_name: str,
                          eval_length: int, num_samples: int, seed: int, cache_dir: str | None,
-                         micro_batch_size: int) -> Dict[str, np.ndarray]:
+                         micro_batch_size: int, restore_router_rms: bool = False) -> Dict[str, np.ndarray]:
     loaded = load_model_for_analysis(ckpt_dir, run_dir, device=device, dtype_name=dtype_name)
     layers = loaded.layers
     num_layers = len(layers)
+    if restore_router_rms:
+        for layer in layers:
+            layer._pat_restore_router_logits_rms = True
 
     batches = build_eval_samples(
         loaded.tokenizer, eval_length=eval_length, num_samples=num_samples, seed=seed, cache_dir=cache_dir
@@ -84,7 +87,7 @@ def collect_peak_valley(run_dir: Path, ckpt_dir: Path, device: str, dtype_name: 
 
 
 def plot_grid(results: Dict[str, np.ndarray], labels: List[str], eval_length: int,
-              kind: str, output_dir: Path) -> None:
+              kind: str, output_dir: Path, tag: str = "") -> None:
     n = len(labels)
     ncols = 3
     nrows = (n + ncols - 1) // ncols
@@ -107,8 +110,8 @@ def plot_grid(results: Dict[str, np.ndarray], labels: List[str], eval_length: in
     for j in range(n, len(axes)):
         axes[j].axis("off")
     fig.colorbar(im, ax=axes.tolist(), shrink=0.8, label=f"effective bias {kind}")
-    fig.suptitle(f"K1 (post router-rms-fix) effective-bias {kind}: layer x position, L={eval_length}")
-    out = output_dir / f"k1_allscales_{kind}_L{eval_length}.png"
+    fig.suptitle(f"K1 effective-bias {kind}{(' [' + tag + ']') if tag else ''}: layer x position, L={eval_length}")
+    out = output_dir / f"k1_allscales_{kind}_L{eval_length}{('_' + tag) if tag else ''}.png"
     fig.savefig(out, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"[plot] wrote {out}")
@@ -126,6 +129,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--cache_dir", type=str, default=None)
     p.add_argument("--micro_batch_size_512", type=int, default=8)
     p.add_argument("--micro_batch_size_4096", type=int, default=2)
+    p.add_argument("--restore_router_rms", action="store_true",
+                    help="Re-enable the router_logits RMS-norm removed in commit 968a971f81, "
+                         "for faithfully re-analyzing checkpoints trained before that commit.")
+    p.add_argument("--run_dirs", type=str, nargs="+", default=None,
+                    help="Override RUN_DIRS as 'dirname:label' pairs. If omitted, uses the built-in list.")
+    p.add_argument("--tag", type=str, default="",
+                    help="Suffix appended to output filenames (e.g. 'oldckpt_routerrms').")
     return p.parse_args()
 
 
@@ -135,18 +145,24 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    labels = [lb for _, lb in RUN_DIRS]
+    if args.run_dirs:
+        run_dirs = [tuple(item.split(":", 1)) for item in args.run_dirs]
+    else:
+        run_dirs = RUN_DIRS
+    tag = f"_{args.tag}" if args.tag else ""
+
+    labels = [lb for _, lb in run_dirs]
     for eval_length in args.eval_lengths:
         bs = args.micro_batch_size_512 if eval_length <= 512 else args.micro_batch_size_4096
         peak_results: Dict[str, np.ndarray] = {}
         valley_results: Dict[str, np.ndarray] = {}
-        for dirname, label in RUN_DIRS:
+        for dirname, label in run_dirs:
             run_dir = runs_root / dirname
             ckpts = discover_checkpoints(run_dir)
             if 15000 not in ckpts:
                 print(f"[skip] {label}: no checkpoint-15000 in {run_dir}")
                 continue
-            print(f"[main] L={eval_length} label={label} ...")
+            print(f"[main] L={eval_length} label={label} restore_router_rms={args.restore_router_rms} ...")
             out = collect_peak_valley(
                 run_dir=run_dir,
                 ckpt_dir=ckpts[15000],
@@ -157,16 +173,17 @@ def main() -> None:
                 seed=args.seed,
                 cache_dir=args.cache_dir,
                 micro_batch_size=bs,
+                restore_router_rms=args.restore_router_rms,
             )
             peak_results[label] = out["peak"]
             valley_results[label] = out["valley"]
-            np.save(output_dir / f"{label}_L{eval_length}_peak.npy", out["peak"])
-            np.save(output_dir / f"{label}_L{eval_length}_valley.npy", out["valley"])
+            np.save(output_dir / f"{label}_L{eval_length}_peak{tag}.npy", out["peak"])
+            np.save(output_dir / f"{label}_L{eval_length}_valley{tag}.npy", out["valley"])
 
         present_labels = [lb for lb in labels if lb in peak_results]
         if present_labels:
-            plot_grid(peak_results, present_labels, eval_length, "peak", output_dir)
-            plot_grid(valley_results, present_labels, eval_length, "valley", output_dir)
+            plot_grid(peak_results, present_labels, eval_length, "peak", output_dir, tag=tag)
+            plot_grid(valley_results, present_labels, eval_length, "valley", output_dir, tag=tag)
 
     print(f"[main] done. outputs in {output_dir}")
 
