@@ -504,7 +504,11 @@ def collect_layer_amplitudes(layer: Any, t: int) -> List[Dict[str, Any]]:
     cap = getattr(layer, "_pat234_cap", None)
     if cap is None:
         raise RuntimeError("Layer capture dict is not set")
-    s2 = cap.get("S2_postp99", [])
+    # S2_postp99 was removed from path_attn.py along with the p99 clamp step
+    # (commit d339c6292a, 2026-07-31 13:33) -- basis_table now has no clamp
+    # between S1_postnorm and the per-scale gain multiply, so S1_postnorm is
+    # the current equivalent of "post-p99" (identity when clamp is absent).
+    s2 = cap.get("S2_postp99", []) or cap.get("S1_postnorm", [])
     s3 = cap.get("S3_postgain", [])
     s4pre = cap.get("S4pre_preclamp", [])
     s4post = cap.get("S4post_postclamp", [])
