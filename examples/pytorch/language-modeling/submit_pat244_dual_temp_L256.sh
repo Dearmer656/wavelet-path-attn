@@ -12,7 +12,7 @@ mkdir -p "${GEN_DIR}"
 
 # args: tag  K  scale_max_exp_pycfg  norm_mode  gres_directive
 emit_and_submit() {
-  local tag="$1" K="$2" sme="$3" norm_mode="$4" gres="$5"
+  local tag="$1" K="$2" sme="$3" norm_mode="$4" gres="$5" multiscale_norm="${6:-none}"
   local run_out="${RUN_BASE}/${tag}"
   local train_sh="${GEN_DIR}/train_${tag}.sh"
   local test_sh="${GEN_DIR}/test_${tag}.sh"
@@ -108,7 +108,7 @@ wavelet_ctx_feat_detach_delta=true
 wavelet_ctx_feat_mode="q_minus_qcorr_meanh"
 wavelet_ctxscale_k=${K}
 wavelet_ctxscale_scale_max_exp=${sme}
-multiscale_norm="none"
+multiscale_norm="${multiscale_norm}"
 wavelet_ctxscale_pattern_mode="ricker"
 wavelet_ctxscale_center_pos_ratio=0.0
 wavelet_ctxscale_dual_center_enable=false
@@ -131,12 +131,12 @@ EOF
 K3_SME='[12, 14, 15.169925001442312]'
 
 # spread gres across free pools (6000: elm26/71/73; a6000: elm65; 3090: elm54)
-emit_and_submit K1_me14_rho128_none        1 14         none                  '#SBATCH --gres=gpu:6000:2'
-emit_and_submit K1_me14_rho128_rmsjoint    1 14         rms_joint             '#SBATCH --gres=gpu:6000:2'
-emit_and_submit K1_me14_rho128_dualtemp    1 14         dual_temp             '#SBATCH --gres=gpu:6000:2'
-emit_and_submit K3_r64_128_192_none        3 "${K3_SME}" none                 '#SBATCH --gres=gpu:a6000:2'
-emit_and_submit K3_r64_128_192_rmsjoint    3 "${K3_SME}" rms_joint            '#SBATCH --gres=gpu:3090:2'
-emit_and_submit K3_r64_128_192_A_dualtemp  3 "${K3_SME}" dual_temp            '#SBATCH --gres=gpu:a6000:2'
-emit_and_submit K3_r64_128_192_B_scalerms  3 "${K3_SME}" dual_temp_scale_rms  '#SBATCH --gres=gpu:3090:2'
-emit_and_submit K3_r64_128_192_C_scalenone 3 "${K3_SME}" dual_temp_scale_none '#SBATCH --gres=gpu:6000:2'
+emit_and_submit K1_me14_rho128_none        1 14         none                  '#SBATCH --gres=gpu:6000:2' none
+emit_and_submit K1_me14_rho128_rmsjoint    1 14         rms_joint             '#SBATCH --gres=gpu:6000:2' none
+emit_and_submit K1_me14_rho128_dualtemp    1 14         dual_temp             '#SBATCH --gres=gpu:6000:2' none
+emit_and_submit K3_r64_128_192_none        3 "${K3_SME}" none                 '#SBATCH --gres=gpu:a6000:2' rms
+emit_and_submit K3_r64_128_192_rmsjoint    3 "${K3_SME}" rms_joint            '#SBATCH --gres=gpu:6000:2' rms
+emit_and_submit K3_r64_128_192_A_dualtemp  3 "${K3_SME}" dual_temp            '#SBATCH --gres=gpu:a6000:2' rms
+emit_and_submit K3_r64_128_192_B_scalerms  3 "${K3_SME}" dual_temp_scale_rms  '#SBATCH --gres=gpu:6000:2' rms
+emit_and_submit K3_r64_128_192_C_scalenone 3 "${K3_SME}" dual_temp_scale_none '#SBATCH --gres=gpu:6000:2' rms
 echo "=== all 8 submitted ==="
