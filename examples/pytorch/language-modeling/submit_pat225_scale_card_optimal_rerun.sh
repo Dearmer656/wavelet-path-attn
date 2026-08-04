@@ -150,8 +150,8 @@ K16_SME='[0, 1.8667, 3.7333, 5.6, 7.4667, 9.3333, 11.2, 13.0667, 14.9333, 16.8, 
 
 emit_and_submit S1_s43_optrerun  1  14 43 '#SBATCH --gres=gpu:a100:2 --nodelist=elm43'
 emit_and_submit S1_s44_optrerun  1  14 44 '#SBATCH --gres=gpu:a100:2 --nodelist=elm43'
-emit_and_submit K5_s43_optrerun  5  "${K5_SME}" 43 '#SBATCH --gres=gpu:6000:2 --nodelist=elm71'
-emit_and_submit K5_s44_optrerun  5  "${K5_SME}" 44 '#SBATCH --gres=gpu:6000:2 --nodelist=elm72'
-emit_and_submit K16_s43_optrerun 16 "${K16_SME}" 43 '#SBATCH --gres=gpu:6000:2 --nodelist=elm73'
+emit_and_submit K5_s43_optrerun  5  "${K5_SME}" 43 '#SBATCH --gres=gpu:3090:2 --nodelist=elm54'
+emit_and_submit K5_s44_optrerun  5  "${K5_SME}" 44 '#SBATCH --gres=gpu:3090:2 --nodelist=elm55'
+emit_and_submit K16_s43_optrerun 16 "${K16_SME}" 43 '#SBATCH --gres=gpu:p6000:2 --nodelist=elm82'
 
 echo "=== all 5 submitted ==="
