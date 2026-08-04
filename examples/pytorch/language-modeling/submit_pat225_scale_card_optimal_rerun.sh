@@ -138,8 +138,15 @@ EOF
   echo "submitted ${tag}  K=${K}  seed=${seed}  job=${jid}  (${gres})"
 }
 
-K5_SME='[14, 15.1998, 16, 16.6439, 17.1699]'
-K16_SME='[8, 9.0667, 10.1333, 11.2, 12.2667, 13.3333, 14.4, 15.4667, 16.5333, 17.6, 18.6667, 19.7333, 20.8, 21.8667, 22.9333, 24]'
+# Scale lists reproduce the ORIGINAL pre-PAT-227 (and PAT-227-default-14-scalar)
+# hardcoded linspace formula: old _scale_exps = [14.0*i/(K-1) for i in range(K)],
+# rho_i = 2^_scale_exps[i]. Current code's list branch divides each element by 2
+# (me/2 = exponent, matching this session's "me" convention throughout), so the
+# equivalent me list is me_i = 28.0*i/(K-1) for i in range(K) -- NOT PAT-244's
+# own K4/K5 scale choices, which are an unrelated, narrower-band design.
+K4_SME='[0, 9.3333, 18.6667, 28]'
+K5_SME='[0, 7, 14, 21, 28]'
+K16_SME='[0, 1.8667, 3.7333, 5.6, 7.4667, 9.3333, 11.2, 13.0667, 14.9333, 16.8, 18.6667, 20.5333, 22.4, 24.2667, 26.1333, 28]'
 
 emit_and_submit S1_s43_optrerun  1  14 43 '#SBATCH --gres=gpu:a100:2 --nodelist=elm43'
 emit_and_submit S1_s44_optrerun  1  14 44 '#SBATCH --gres=gpu:a100:2 --nodelist=elm43'
