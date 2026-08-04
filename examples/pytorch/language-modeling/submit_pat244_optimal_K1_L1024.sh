@@ -1,7 +1,9 @@
 #!/bin/bash
 # PAT-244: "optimal setting" K1, L_train=1024, rho=512 (me=18), on 2x P6000 (elm82).
-# with_null_independent_scales + wavelet_router_norm_mode=rms_joint + multiscale_norm=rms
-# (multiscale_norm is inert at K=1, kept for consistency with the fixed optimal definition).
+# with_null (NOT with_null_independent_scales: at K=1 that stacks a redundant second
+# sigmoid gate on top of g0_gate, which is architecturally wrong -- with_null's w=1
+# collapse is the correct K=1 reduction) + wavelet_router_norm_mode=rms_joint +
+# multiscale_norm=rms (inert at K=1, kept for consistency with the fixed optimal definition).
 set -euo pipefail
 
 WORKDIR="/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling"
@@ -109,7 +111,7 @@ wavelet_router_chunk_pool="mean"
 wavelet_router_chunk_align="left"
 wavelet_router_chunk_share=true
 wavelet_ctxscale_disable_layer_gate=true
-wavelet_router_sigmoid_mode="with_null_independent_scales"
+wavelet_router_sigmoid_mode="with_null"
 wavelet_ctx_feat_detach_delta=true
 wavelet_ctx_feat_mode="q_minus_qcorr_meanh"
 wavelet_ctxscale_k=${K}
