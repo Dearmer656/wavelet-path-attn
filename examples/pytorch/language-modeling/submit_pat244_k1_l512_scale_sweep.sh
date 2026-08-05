@@ -28,9 +28,9 @@ emit_and_submit() {
   local K=1
   local block_size=512
   local chunk_q=128
-  local nproc=2
+  local nproc=4
   local bs=16
-  local accum=2
+  local accum=1
   local run_out="${RUN_BASE}/${tag}"
   local train_sh="${GEN_DIR}/train_${tag}.sh"
   local test_sh="${GEN_DIR}/test_${tag}.sh"
@@ -142,8 +142,8 @@ EOF
   echo "submitted ${tag}  sme=${sme}  job=${jid}  (${gres})"
 }
 
-emit_and_submit K1_L512_me14_rho128 14 '#SBATCH --gres=gpu:6000:2 --nodelist=elm72'
-emit_and_submit K1_L512_me16_rho256 16 '#SBATCH --gres=gpu:6000:2 --nodelist=elm73'
-emit_and_submit K1_L512_me18_rho512 18 '#SBATCH --gres=gpu:3090:2 --nodelist=elm54'
+emit_and_submit K1_L512_me14_rho128 14 '#SBATCH --gres=gpu:6000:4 --nodelist=elm72'
+emit_and_submit K1_L512_me16_rho256 16 '#SBATCH --gres=gpu:3090:4 --nodelist=elm54'
+emit_and_submit K1_L512_me18_rho512 18 '#SBATCH --gres=gpu:3090:4 --nodelist=elm55'
 
 echo "=== all 3 K1 L512 sweep runs submitted ==="
