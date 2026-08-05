@@ -132,4 +132,9 @@ EOF
 emit_and_submit K1_me12_rho64_rmsjoint  1 12 rms_joint '#SBATCH --gres=gpu:6000:2 --nodelist=elm73' none with_null
 emit_and_submit K1_me16_rho256_rmsjoint 1 16 rms_joint '#SBATCH --gres=gpu:6000:2 --nodelist=elm73' none with_null
 
-echo "=== both K1 L256 scale-sweep runs submitted ==="
+# Outside-window reference point (rho=2048 = 8x L256), mirrors L512 sweep's
+# me24/rho4096 (8x L512) point -- completes the K1 L256 curve for apples-to-apples
+# comparison against the L512 K1 curve under the bottom-up design methodology.
+emit_and_submit K1_me22_rho2048_rmsjoint 1 22 rms_joint '#SBATCH --gres=gpu:6000:2 --nodelist=elm73' none with_null
+
+echo "=== all K1 L256 scale-sweep runs submitted ==="
