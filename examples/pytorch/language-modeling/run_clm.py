@@ -478,6 +478,21 @@ class DataTrainingArguments:
         default=None,
         metadata={"help": "Path to HotpotQA-Long augmented JSONL. If set, overrides HF hotpot_qa distractor loading."},
     )
+    data_mix_seed: int = field(
+        default=42,
+        metadata={
+            "help": (
+                "Seed for interleave_datasets() when mixing hotpot_qa+xsum train splits "
+                "(dataset_name=mix). Deliberately DECOUPLED from --seed: interleave_datasets "
+                "with stopping_strategy='first_exhausted' is a stochastic draw process, so using "
+                "--seed here would make the resulting training corpus (composition and exact "
+                "example count) differ across model seeds, confounding seed-ablation comparisons "
+                "with data differences. Fixing this seed means every --seed variant at a given "
+                "block_size trains on byte-identical data; --seed still controls everything else "
+                "(init, dropout, batch shuffling order)."
+            )
+        },
+    )
     hotpot_long_lengths: Optional[str] = field(
         default=None,
         metadata={"help": "Comma-separated target lengths to filter from hotpot_long_jsonl (e.g. '2048,4096')."},
@@ -6078,7 +6093,7 @@ def main():
                 mixed_train = interleave_datasets(
                     [hotpot_train, xsum_train],
                     probabilities=[0.889, 0.111],
-                    seed=training_args.seed,
+                    seed=data_args.data_mix_seed,
                     stopping_strategy="first_exhausted",
                 )
                 lm_datasets["train"] = mixed_train
