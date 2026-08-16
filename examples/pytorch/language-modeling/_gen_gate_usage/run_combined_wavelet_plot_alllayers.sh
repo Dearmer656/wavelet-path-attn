@@ -2,7 +2,7 @@
 #SBATCH --job-name=plot_wavelet_alllayers_ckpt15000
 #SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/analysis/k3_signed_rms/logs/%j_plot_wavelet_alllayers.txt
 #SBATCH --partition=gpu_long
-#SBATCH --gres=gpu:a6000:1 --nodelist=elm63
+#SBATCH --gres=gpu:a6000:1 --nodelist=elm61
 #SBATCH --time=2:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
