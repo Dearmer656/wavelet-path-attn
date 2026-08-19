@@ -3336,9 +3336,14 @@ def build_context_budgeted(ex, budget_tokens: int, prefer_same_title: bool = Tru
             selected.append((t, sid, text, ids, L))
             total += add_cost
 
-    # 6) optional: keep original order (more natural), or keep "added order"
-    # 更自然：按 title 在原 context 中的顺序 + sid 排序（需要你提供 title 顺序）
-    # 这里先保持“添加顺序”（supporting + shortest fill (+ longest top-up)），与你的设想一致
+    ctx = ex.get("context", None)
+    if isinstance(ctx, dict) and "title" in ctx:
+        title_order = {str(t): i for i, t in enumerate(ctx["title"])}
+    else:
+        title_order = {}
+    selected.sort(key=lambda x: (title_order.get(x[0], len(title_order)), x[1]))
+
+    # 6) Keep the original document order: title position in context, then sentence id.
     context_text = "\n".join([x[2] for x in selected])
     context_ids = []
     for i, x in enumerate(selected):
@@ -4478,6 +4483,11 @@ def main():
     config.wavelet_ctxscale_ko_layers = cfg_str(
         cfg, "wavelet_ctxscale_ko_layers", str(getattr(config, "wavelet_ctxscale_ko_layers", ""))
     )
+    config.wavelet_ctxscale_ko_query_ranges = cfg_str(
+        cfg,
+        "wavelet_ctxscale_ko_query_ranges",
+        str(getattr(config, "wavelet_ctxscale_ko_query_ranges", "")),
+    )
     config.wavelet_ctx_feat_rms_eps = cfg_float(
         cfg, "wavelet_ctx_feat_rms_eps", float(getattr(config, "wavelet_ctx_feat_rms_eps", 1e-6))
     )
@@ -5156,7 +5166,7 @@ def main():
         # os._exit(0)
         def _hotpot_cache_fingerprint():
             key = {
-                "dataset": "hotpot_qa_mcq_lm_v1",
+                "dataset": "hotpot_qa_mcq_lm_v2_docorder",
                 "block_size": block_size,
                 "q_use": q_use,
                 "bucket_size": bucket_size,
