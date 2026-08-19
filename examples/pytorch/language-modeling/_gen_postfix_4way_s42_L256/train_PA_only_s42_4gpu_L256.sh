@@ -19,6 +19,7 @@ mkdir -p "${RUN_OUT}/train"
 cat > "${RUN_OUT}/supply_model.cfg" <<'CFG'
 router_mode="seperate"
 coe_mode="none"
+hotpot_question_position="later"
 wavelet_mode="off"
 wavelet_ctxscale_k=1
 wavelet_ctxscale_scale_max_exp=14
