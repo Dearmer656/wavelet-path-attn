@@ -89,7 +89,7 @@ def main():
       print(f"{'layer':>5} {'near_mean':>10} {'near_std':>9} {'far_mean':>10} {'far_std':>9} {'near_H_mean':>11} {'far_H_mean':>10}")
       for layer in range(N_LAYERS):
         core = getattr(model.transformer.h[layer].attn, "core", model.transformer.h[layer].attn)
-        pa_logits = getattr(core, "_last_logits_pa_only", None)
+        pa_logits = getattr(core, "_last_pa_raw_logits_unconditional", None)
         if pa_logits is None:
             print(f"{layer:>5}  MISSING HOOK")
             continue
