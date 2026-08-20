@@ -493,6 +493,24 @@ class DataTrainingArguments:
             )
         },
     )
+    mixed_block_sizes: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": (
+                "Mix mode training only. Comma-separated per-example origin block sizes, e.g. '256,512'. "
+                "--block_size must equal the maximum listed size."
+            )
+        },
+    )
+    mixed_block_probs: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": (
+                "Mix mode training only. Comma-separated probabilities for --mixed_block_sizes. "
+                "Defaults to uniform if omitted."
+            )
+        },
+    )
     hotpot_long_lengths: Optional[str] = field(
         default=None,
         metadata={"help": "Comma-separated target lengths to filter from hotpot_long_jsonl (e.g. '2048,4096')."},
@@ -3897,6 +3915,44 @@ def main():
     else:
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
+    mixed_block_sizes = None
+    mixed_block_probs = None
+    if data_args.mixed_block_sizes is not None:
+        if data_args.dataset_name != "mix" or not training_args.do_train:
+            raise ValueError("--mixed_block_sizes is only supported with --dataset_name mix and --do_train.")
+        try:
+            mixed_block_sizes = [int(x.strip()) for x in str(data_args.mixed_block_sizes).split(",") if x.strip()]
+        except Exception as exc:
+            raise ValueError("--mixed_block_sizes must be a comma-separated list of positive integers.") from exc
+        if len(mixed_block_sizes) < 2 or len(set(mixed_block_sizes)) != len(mixed_block_sizes):
+            raise ValueError("--mixed_block_sizes must contain at least two distinct positive integers.")
+        if any(size <= 0 for size in mixed_block_sizes):
+            raise ValueError("--mixed_block_sizes must contain only positive integers.")
+        max_mixed_block_size = max(mixed_block_sizes)
+        if data_args.block_size != max_mixed_block_size:
+            raise ValueError(
+                f"--block_size must equal max(--mixed_block_sizes)={max_mixed_block_size}; "
+                f"got --block_size {data_args.block_size}. The max size is the tensor shape used for config/eval."
+            )
+        if data_args.mixed_block_probs is None:
+            mixed_block_probs = [1.0 / len(mixed_block_sizes)] * len(mixed_block_sizes)
+        else:
+            try:
+                mixed_block_probs = [float(x.strip()) for x in str(data_args.mixed_block_probs).split(",") if x.strip()]
+            except Exception as exc:
+                raise ValueError("--mixed_block_probs must be a comma-separated list of floats.") from exc
+            if len(mixed_block_probs) != len(mixed_block_sizes):
+                raise ValueError("--mixed_block_probs must have the same length as --mixed_block_sizes.")
+            if any(prob < 0.0 for prob in mixed_block_probs):
+                raise ValueError("--mixed_block_probs must contain non-negative probabilities.")
+            prob_sum = sum(mixed_block_probs)
+            if abs(prob_sum - 1.0) > 1e-6:
+                raise ValueError(f"--mixed_block_probs must sum to 1.0; got {prob_sum}.")
+    elif data_args.mixed_block_probs is not None:
+        raise ValueError("--mixed_block_probs requires --mixed_block_sizes.")
+    data_args._mixed_block_sizes = mixed_block_sizes
+    data_args._mixed_block_probs = mixed_block_probs
+
     # Sending telemetry. Tracking the example usage helps us better allocate resources to maintain them. The
     # information sent is the one passed as arguments along with your Python/PyTorch versions.
     send_example_telemetry("run_clm", model_args, data_args)
@@ -5032,6 +5088,345 @@ def main():
     probe_split = "train" if (training_args.do_train and "train" in raw_datasets) else list(raw_datasets.keys())[0]
     probe_cols = raw_datasets[probe_split].column_names
     is_synth = ("input_ids" in probe_cols) and ("labels" in probe_cols)
+    mixed_block_sizes = getattr(data_args, "_mixed_block_sizes", None)
+    mixed_block_probs = getattr(data_args, "_mixed_block_probs", None)
+
+    def _strip_to_lm_cols(ds):
+        keep = {"input_ids", "attention_mask", "labels"}
+        drop = [c for c in ds.column_names if c not in keep]
+        return ds.remove_columns(drop) if drop else ds
+
+    def _right_pad_lm_example_to_block_size(ex, target_block_size):
+        input_ids = list(ex["input_ids"])
+        attention_mask = list(ex["attention_mask"])
+        labels = list(ex["labels"])
+        pad_len = target_block_size - len(input_ids)
+        if pad_len < 0:
+            raise ValueError(f"[mix] cannot pad sequence of length {len(input_ids)} to {target_block_size}.")
+        if len(attention_mask) != len(input_ids) or len(labels) != len(input_ids):
+            raise ValueError("[mix] input_ids, attention_mask, and labels lengths must match before padding.")
+        if pad_len == 0:
+            return {"input_ids": input_ids, "attention_mask": attention_mask, "labels": labels}
+        if tokenizer.eos_token_id is None:
+            raise ValueError("[mix] tokenizer.eos_token_id is required for right-padding mixed block sizes.")
+        return {
+            "input_ids": input_ids + [tokenizer.eos_token_id] * pad_len,
+            "attention_mask": attention_mask + [0] * pad_len,
+            "labels": labels + [-100] * pad_len,
+        }
+
+    def _build_mix_train_dataset_for_block_size(mix_block_size: int):
+        tokenizer.pad_token = tokenizer.eos_token
+        local_bucket_size = getattr(data_args, "xsum_bucket_size", 0)
+        q_use = bool(getattr(config, "question_use_for_train", False))
+        q_use = q_use and training_args.do_train
+        if training_args.do_train and local_bucket_size == 0:
+            local_bucket_size = mix_block_size
+
+        hotpot_column_names = list(hotpot_qa_raw_datasets["train"].features)
+
+        def build_hotpot_qa_for_mix(ex, idx):
+            def make_discard(total_len: int = 0):
+                return {
+                    "discard": True,
+                    "input_ids": [tokenizer.pad_token_id] * mix_block_size,
+                    "labels": [-100] * mix_block_size,
+                    "attention_mask": [0] * mix_block_size,
+                    "level": level,
+                    "placement_pct": placement_pct,
+                }
+
+            q = ex.get("question", "")
+            gold = ex.get("answer", "")
+            level = ex.get("level", "unknown")
+            placement_pct = float(ex.get("placement_pct", -1.0))
+            if not isinstance(level, str):
+                level = str(level)
+            if not isinstance(q, str) or not isinstance(gold, str) or len(gold.strip()) == 0:
+                return make_discard(0)
+
+            tok = _get_tokenizer()
+            if getattr(config, "hotpot_question_position", "after") == "before":
+                q_part = f"Question: {q}\n"
+                ctx_part = "Context:\n"
+                suffix_text = "\nAnswer:"
+
+                q_ids = tok(q_part, add_special_tokens=True, truncation=False)["input_ids"]
+                ctx_prompt_ids = tok(ctx_part, add_special_tokens=False, truncation=False)["input_ids"]
+                suffix_ids = tok(suffix_text, add_special_tokens=False, truncation=False)["input_ids"]
+
+                prefix_ids = q_ids + ctx_prompt_ids
+                labels_prefix = (q_ids if q_use else [-100] * len(q_ids)) + [-100] * len(ctx_prompt_ids)
+            else:
+                ctx_part = "Context:\n"
+                q_part = f"\nQuestion: {q}\n"
+                ans_prompt = "Answer:"
+
+                prefix_ids = tok(ctx_part, add_special_tokens=True, truncation=False)["input_ids"]
+                q_ids = tok(q_part, add_special_tokens=False, truncation=False)["input_ids"]
+                ans_prompt_ids = tok(ans_prompt, add_special_tokens=False, truncation=False)["input_ids"]
+                suffix_ids = q_ids + ans_prompt_ids
+
+                labels_prefix = [-100] * len(prefix_ids)
+                labels_suffix = (q_ids if q_use else [-100] * len(q_ids)) + [-100] * len(ans_prompt_ids)
+
+            ans_ids = tok(" " + gold.strip(), add_special_tokens=False)["input_ids"]
+            prompt_labels = labels_prefix
+            budget_context = mix_block_size - len(prefix_ids) - len(suffix_ids) - len(ans_ids) - 1
+            lower = max(0, mix_block_size - local_bucket_size) if local_bucket_size > 0 else 0
+            min_ctx_tokens = max(0, (lower + 1) - (len(prefix_ids) + len(suffix_ids) + len(ans_ids) + 1))
+
+            ctx_text, ctx_ids, status = build_context_budgeted(
+                ex,
+                budget_context,
+                prefer_same_title=True,
+                min_tokens=min_ctx_tokens,
+            )
+            if ctx_text is None:
+                return make_discard(0)
+
+            prompt_ids = prefix_ids + ctx_ids + suffix_ids
+            ids = prompt_ids + ans_ids + [tokenizer.eos_token_id]
+
+            if getattr(config, "hotpot_question_position", "after") == "before":
+                labels = prompt_labels + [-100] * len(ctx_ids) + [-100] * len(suffix_ids) + ans_ids + [-100]
+            else:
+                labels = prompt_labels + [-100] * len(ctx_ids) + labels_suffix + ans_ids + [-100]
+
+            L = len(ids)
+            if L > mix_block_size:
+                return make_discard(L)
+            if local_bucket_size > 0:
+                lower = max(0, mix_block_size - local_bucket_size)
+                if L <= lower:
+                    return make_discard(L)
+
+            pad_len = mix_block_size - L
+            ids = ids + [tokenizer.pad_token_id] * pad_len
+            labels = labels + [-100] * pad_len
+            attn = [1] * L + [0] * pad_len
+
+            return {
+                "discard": False,
+                "input_ids": ids,
+                "labels": labels,
+                "attention_mask": attn,
+                "level": level,
+                "placement_pct": placement_pct,
+            }
+
+        def _hotpot_cache_fingerprint_for_mix():
+            key = {
+                "dataset": "hotpot_qa_mcq_lm_v2_docorder",
+                "block_size": mix_block_size,
+                "q_use": q_use,
+                "bucket_size": local_bucket_size,
+                "tok": getattr(tokenizer, "name_or_path", None),
+                "question_position": getattr(config, "hotpot_question_position", None),
+                "hotpot_long_jsonl": getattr(data_args, "hotpot_long_jsonl", None),
+                "hotpot_long_lengths": getattr(data_args, "hotpot_long_lengths", None),
+            }
+            return hashlib.md5(json.dumps(key, sort_keys=True).encode("utf-8")).hexdigest()
+
+        if training_args.do_train and not training_args.do_eval:
+            hotpot_cache_root = Path(getattr(data_args, "cache_dir", None) or os.path.expanduser("~/.cache/train_hotpot_qa_lm"))
+        elif not training_args.do_train and training_args.do_eval:
+            hotpot_cache_root = Path(getattr(data_args, "cache_dir", None) or os.path.expanduser("~/.cache/eval_hotpot_qa_lm"))
+        else:
+            hotpot_cache_root = Path(getattr(data_args, "cache_dir", None) or os.path.expanduser("~/.cache/hotpot_qa_lm"))
+        hotpot_cache_root.mkdir(parents=True, exist_ok=True)
+        hotpot_cache_dir = hotpot_cache_root / f"hotpot_qa_lm_{_hotpot_cache_fingerprint_for_mix()}"
+        logger.info(f"[hotpot_qa] cache_dir={hotpot_cache_dir}")
+
+        use_hotpot_cache = hotpot_cache_dir.exists() and (not data_args.overwrite_cache)
+        hotpot_target_ds = DatasetDict()
+        if use_hotpot_cache:
+            cached = load_from_disk(str(hotpot_cache_dir))
+            logger.info(f"[hotpot_qa] cached splits={list(cached.keys())}")
+            if "train" not in cached:
+                logger.warning("[hotpot_qa] cache missing splits ['train'], will rebuild.")
+                use_hotpot_cache = False
+            else:
+                hotpot_target_ds = cached
+                for sp in hotpot_target_ds.keys():
+                    hotpot_target_ds[sp].set_format(type="python", columns=["input_ids", "attention_mask", "labels"])
+
+        if not use_hotpot_cache:
+            with training_args.main_process_first(desc="hotpot_qa build"):
+                processed_train = hotpot_qa_raw_datasets["train"].map(
+                    build_hotpot_qa_for_mix,
+                    with_indices=True,
+                    remove_columns=hotpot_column_names,
+                    num_proc=None,
+                    desc="hotpot_qa map (split=train)",
+                    load_from_cache_file=not data_args.overwrite_cache,
+                )
+            filtered = processed_train.filter(lambda ex: not ex.get("discard", False))
+            if "level" in filtered.column_names:
+                lvl_stats = Counter([str(x).lower() for x in filtered["level"]])
+                logger.info(f"[hotpot_qa] split=train level distribution: {dict(lvl_stats)} (n={len(filtered)})")
+                filtered = filtered.remove_columns(["level"])
+            if "placement_pct" in filtered.column_names:
+                filtered = filtered.remove_columns(["placement_pct"])
+            filtered.set_format(type="python", columns=["input_ids", "attention_mask", "labels"])
+            hotpot_target_ds["train"] = filtered
+            if getattr(training_args, "process_index", 0) == 0:
+                hotpot_cache_dir.mkdir(parents=True, exist_ok=True)
+                hotpot_target_ds.save_to_disk(str(hotpot_cache_dir))
+
+        xsum_raw = xsum_raw_datasets
+        xsum_column_names = list(xsum_raw["train"].features)
+        prompt_tpl = "Summarize the following document:\n{doc}\n\nSummary:"
+
+        def _xsum_lm_cache_fingerprint_for_mix():
+            mode = "fulltrain" if getattr(data_args, "full_fine_tune", False) else "masktrain"
+            key = {
+                "dataset": f"xsum_prefixlm_v4_bucket_select_{data_args.dataset_name}",
+                "mode": mode,
+                "tok_name": getattr(tokenizer, "name_or_path", None),
+                "block_size": mix_block_size,
+                "xsum_bucket_size": getattr(data_args, "xsum_bucket_size", 0),
+                "xsum_bucket_apply_to": getattr(data_args, "xsum_bucket_apply_to", "eval_test"),
+                "xsum_min_total_len": getattr(data_args, "xsum_min_total_len", 0),
+                "eos_id": tokenizer.eos_token_id,
+                "train_file": str(getattr(data_args, "train_file", None) or ""),
+            }
+            return hashlib.md5(json.dumps(key, sort_keys=True).encode("utf-8")).hexdigest()
+
+        mode = "fulltrain" if getattr(data_args, "full_fine_tune", False) else "masktrain"
+        lm_cache_root = Path(
+            getattr(data_args, "cache_dir", None) or os.path.expanduser("~/.cache/xsum_prefixlm")
+        ) / "lm_datasets_cache_simple" / mode
+        lm_cache_root.mkdir(parents=True, exist_ok=True)
+        lm_cache_dir = lm_cache_root / f"xsum_prefixlm_{_xsum_lm_cache_fingerprint_for_mix()}"
+
+        def _xsum_keep_for_split_for_mix(ex, split_name: str) -> bool:
+            if ex.get("discard", False):
+                return False
+            L = ex.get("total_token_len", 0)
+            minL = getattr(data_args, "xsum_min_total_len", 0) or 0
+            if minL > 0 and L < minL:
+                return False
+            apply_to = getattr(data_args, "xsum_bucket_apply_to", "eval_test") or "eval_test"
+            if local_bucket_size > 0 and apply_to != "none":
+                apply_bucket = (apply_to == "all") or (apply_to == "eval_test" and split_name in ("validation", "test"))
+                if apply_bucket:
+                    bucket_idx = ((mix_block_size - 1) // local_bucket_size) + 1
+                    upper = bucket_idx * local_bucket_size
+                    lower = upper - local_bucket_size
+                    return (L > lower) and (L <= upper)
+            return True
+
+        use_xsum_cache = lm_cache_dir.exists()
+        xsum_lm_datasets = None
+        if use_xsum_cache:
+            xsum_lm_datasets = load_from_disk(str(lm_cache_dir))
+            need_len = (getattr(data_args, "xsum_bucket_size", 0) or 0) > 0 or (getattr(data_args, "xsum_min_total_len", 0) or 0) > 0
+            if need_len:
+                for split in list(xsum_lm_datasets.keys()):
+                    if "total_token_len" not in xsum_lm_datasets[split].column_names:
+                        logger.warning(
+                            f"[XSUM] Cached dataset at {lm_cache_dir} has no 'total_token_len' column (split={split}); will rebuild."
+                        )
+                        use_xsum_cache = False
+                        break
+            if use_xsum_cache:
+                for split in list(xsum_lm_datasets.keys()):
+                    xsum_lm_datasets[split] = xsum_lm_datasets[split].filter(
+                        lambda ex, split=split: _xsum_keep_for_split_for_mix(ex, split)
+                    )
+            if use_xsum_cache and "train" not in xsum_lm_datasets:
+                logger.warning(f"[XSUM] Cached dataset at {lm_cache_dir} has no 'train' split, will rebuild.")
+                use_xsum_cache = False
+
+        if not use_xsum_cache:
+            if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
+                tokenizer.pad_token_id = tokenizer.eos_token_id
+            assert not data_args.streaming, "XSUM prefix-LM 分支暂不支持 streaming=True"
+
+            def build_and_index_for_mix(ex, idx):
+                def make_discard(total_len: int):
+                    return {
+                        "discard": True,
+                        "input_ids": [tokenizer.pad_token_id] * mix_block_size,
+                        "labels": [-100] * mix_block_size,
+                        "attention_mask": [0] * mix_block_size,
+                        "total_token_len": total_len,
+                    }
+
+                doc = ex.get("document", ex.get("article", ex.get("source", ex.get("report", ""))))
+                summ = ex.get("summary", ex.get("summary_filtered", ex.get("summary_original", ex.get("target", ex.get("abstract", ex.get("highlights", ""))))))
+                if not isinstance(doc, str):
+                    doc = str(doc) if doc is not None else ""
+                if not isinstance(summ, str):
+                    summ = str(summ) if summ is not None else ""
+                doc = doc.strip()
+                summ = summ.strip()
+                if len(doc) == 0 or len(summ) == 0:
+                    return make_discard(0)
+
+                enc_prompt = tokenizer(prompt_tpl.format(doc=doc), add_special_tokens=True, truncation=False)
+                enc_summ = tokenizer(summ, add_special_tokens=False, truncation=False)
+                prompt_ids = enc_prompt["input_ids"]
+                summ_ids = enc_summ["input_ids"]
+                if len(summ_ids) == 0:
+                    return make_discard(0)
+
+                ids = prompt_ids + summ_ids + [tokenizer.eos_token_id]
+                if getattr(data_args, "full_fine_tune", False):
+                    labels = ids.copy()
+                else:
+                    labels = ([-100] * len(prompt_ids)) + summ_ids + [tokenizer.eos_token_id]
+
+                L = len(ids)
+                if L <= 1:
+                    return make_discard(L)
+                if L > mix_block_size:
+                    return make_discard(L)
+
+                pad_len = mix_block_size - L
+                ids = ids + [tokenizer.pad_token_id] * pad_len
+                labels = labels + [-100] * pad_len
+                attn = [1] * L + [0] * pad_len
+
+                return {
+                    "discard": False,
+                    "input_ids": ids,
+                    "labels": labels,
+                    "attention_mask": attn,
+                    "total_token_len": L,
+                }
+
+            with training_args.main_process_first(desc="XSUM build & pad to block_size"):
+                processed_train = xsum_raw["train"].map(
+                    build_and_index_for_mix,
+                    with_indices=True,
+                    remove_columns=xsum_column_names,
+                    num_proc=1,
+                    desc="Tokenize & pad (split=train)",
+                    load_from_cache_file=not data_args.overwrite_cache,
+                )
+            xsum_lm_datasets = DatasetDict()
+            xsum_lm_datasets["train"] = processed_train.filter(lambda ex: _xsum_keep_for_split_for_mix(ex, "train"))
+            with training_args.main_process_first(desc="save lm_datasets to disk (XSUM)"):
+                if getattr(training_args, "process_index", 0) == 0:
+                    xsum_lm_datasets.save_to_disk(str(lm_cache_dir))
+
+        need_cols = ["input_ids", "attention_mask", "labels"]
+        for split in ("train",):
+            if split in xsum_lm_datasets:
+                cols = [c for c in need_cols if c in xsum_lm_datasets[split].column_names]
+                xsum_lm_datasets[split].set_format(type="python", columns=cols)
+                assert len(xsum_lm_datasets[split]) > 0, f"[XSUM] lm_datasets['{split}'] is empty."
+
+        hotpot_train = _strip_to_lm_cols(hotpot_target_ds["train"])
+        xsum_train = _strip_to_lm_cols(xsum_lm_datasets["train"])
+        return interleave_datasets(
+            [hotpot_train, xsum_train],
+            probabilities=[0.889, 0.111],
+            seed=data_args.data_mix_seed,
+            stopping_strategy="first_exhausted",
+        )
 
     if data_args.dataset_name == "hotpot_qa" or (data_args.dataset_name == 'mix'):
         # =========================
@@ -6133,6 +6528,44 @@ def main():
                     )
                 else:
                     logger.warning("[mix] test split missing in hotpot_qa or xsum; skip predict mixing.")
+
+            if training_args.do_train and mixed_block_sizes is not None:
+                max_mixed_block_size = max(mixed_block_sizes)
+                per_size_train = {}
+                per_size_row_counts = {}
+                for mixed_size in mixed_block_sizes:
+                    if mixed_size == max_mixed_block_size:
+                        per_size_train[mixed_size] = lm_datasets["train"]
+                    else:
+                        per_size_train[mixed_size] = _build_mix_train_dataset_for_block_size(mixed_size)
+                    per_size_row_counts[mixed_size] = len(per_size_train[mixed_size])
+
+                padded_train_splits = []
+                for mixed_size in mixed_block_sizes:
+                    train_split = per_size_train[mixed_size]
+                    if mixed_size < max_mixed_block_size:
+                        train_split = train_split.map(
+                            lambda ex, target=max_mixed_block_size: _right_pad_lm_example_to_block_size(ex, target),
+                            desc=f"[mix] right-pad block_size={mixed_size} rows to {max_mixed_block_size}",
+                            load_from_cache_file=not data_args.overwrite_cache,
+                        )
+                        train_split.set_format(type="python", columns=["input_ids", "attention_mask", "labels"])
+                    padded_train_splits.append(train_split)
+
+                logger.info(
+                    "[mix] mixed block-size training active: sizes=%s probabilities=%s per_size_row_counts=%s right_padded_to=%d",
+                    mixed_block_sizes,
+                    mixed_block_probs,
+                    per_size_row_counts,
+                    max_mixed_block_size,
+                )
+                lm_datasets["train"] = interleave_datasets(
+                    padded_train_splits,
+                    probabilities=mixed_block_probs,
+                    seed=data_args.data_mix_seed,
+                    stopping_strategy="first_exhausted",
+                )
+                lm_datasets["train"].set_format(type="python", columns=["input_ids", "attention_mask", "labels"])
             
     if training_args.do_train:
         # if "train" not in tokenized_datasets:
