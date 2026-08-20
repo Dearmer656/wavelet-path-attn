@@ -21,8 +21,16 @@ EVAL_T = 2048
 N_EXAMPLES = 2
 L_TRAIN = 512
 
-CHECKPOINT = "/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/pat225_postfix_docorder/K1_rho256_ricker_s42/checkpoint-15000"
-CFG_PATH = "/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/pat225_postfix_docorder/K1_rho256_ricker_s42/supply_model.cfg"
+CHECKPOINTS = {
+    "K1_rho256_ricker_QWAB": (
+        "/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/pat225_postfix_docorder/K1_rho256_ricker_s42/checkpoint-15000",
+        "/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/pat225_postfix_docorder/K1_rho256_ricker_s42/supply_model.cfg",
+    ),
+    "PA_only": (
+        "/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/pat225_postfix_docorder/PA_only_s42/checkpoint-15000",
+        "/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/pat225_postfix_docorder/PA_only_s42/supply_model.cfg",
+    ),
+}
 
 
 def load_model(checkpoint_dir, cfg_path, block_size):
@@ -62,11 +70,6 @@ def main():
         tokenizer.pad_token = tokenizer.eos_token
     batch = build_batch(tokenizer, EVAL_T, N_EXAMPLES).to(device)
 
-    model = load_model(CHECKPOINT, CFG_PATH, EVAL_T)
-    model.eval().to(device)
-    with torch.no_grad():
-        model(input_ids=batch)
-
     q_pos = torch.arange(EVAL_T, device=device).view(-1, 1)
     k_pos = torch.arange(EVAL_T, device=device).view(1, -1)
     dist = q_pos - k_pos  # [T,T]
@@ -74,8 +77,17 @@ def main():
     near_mask = causal_mask & (dist < L_TRAIN)
     far_mask = causal_mask & (dist >= L_TRAIN)
 
-    print(f"{'layer':>5} {'near_mean':>10} {'near_std':>9} {'far_mean':>10} {'far_std':>9} {'near_H_mean':>11} {'far_H_mean':>10}")
-    for layer in range(N_LAYERS):
+    for name, (ckpt, cfg_path) in CHECKPOINTS.items():
+      print("=" * 100)
+      print(f"CHECKPOINT: {name}")
+      print("=" * 100)
+      model = load_model(ckpt, cfg_path, EVAL_T)
+      model.eval().to(device)
+      with torch.no_grad():
+          model(input_ids=batch)
+
+      print(f"{'layer':>5} {'near_mean':>10} {'near_std':>9} {'far_mean':>10} {'far_std':>9} {'near_H_mean':>11} {'far_H_mean':>10}")
+      for layer in range(N_LAYERS):
         core = getattr(model.transformer.h[layer].attn, "core", model.transformer.h[layer].attn)
         pa_logits = getattr(core, "_last_logits_pa_only", None)
         if pa_logits is None:
