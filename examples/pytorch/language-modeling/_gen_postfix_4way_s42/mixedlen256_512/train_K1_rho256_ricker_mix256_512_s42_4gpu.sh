@@ -66,6 +66,7 @@ wavelet_ctxscale_dual_center_enable=false
 wavelet_router_norm_mode="rms_joint"
 wavelet_router_tau_null_init=1.0
 wavelet_router_tau_scale_init=1.0
+wavelet_router_length_aware=true
 CFG
 
 # Phase 1: block_size=256, 5 epochs, from the shared base checkpoint.
