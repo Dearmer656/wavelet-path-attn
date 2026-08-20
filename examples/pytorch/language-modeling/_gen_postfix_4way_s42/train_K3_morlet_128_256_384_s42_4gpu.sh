@@ -2,7 +2,8 @@
 #SBATCH --job-name=postfix_K3_morlet_128_256_384_s42
 #SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/pat225_postfix_docorder/K3_morlet_128_256_384_s42/train/%j_K3_morlet_128_256_384_s42_train_eval.txt
 #SBATCH --partition=gpu_long
-#SBATCH --gres=gpu:a6000:4
+#SBATCH --gres=gpu:6000:4
+#SBATCH --nodelist=elm71
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --time=100:00:00
