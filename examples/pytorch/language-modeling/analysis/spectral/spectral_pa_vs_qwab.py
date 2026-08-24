@@ -297,10 +297,9 @@ def main() -> None:
         torch.cuda.empty_cache()
 
     for length in LENGTHS:
-        results[str(length)] = {
-            "pa_only": per_model_spectra["pa_only"][length],
-            "qwab": per_model_spectra["qwab"][length],
-        }
+        pa = per_model_spectra["pa_only"][length]
+        qwab = per_model_spectra["qwab"][length]
+        results[str(length)] = {"pa_only": pa, "qwab": qwab}
 
         pa_mean = np.asarray(pa["mean_spectrum"], dtype=np.float64)
         qwab_mean = np.asarray(qwab["mean_spectrum"], dtype=np.float64)
