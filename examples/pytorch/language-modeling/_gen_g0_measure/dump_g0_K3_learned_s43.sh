@@ -2,7 +2,7 @@
 #SBATCH --job-name=g0_K3_learned_s43
 #SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/analysis/gate_usage/logs/%j_K3_learned_s43.txt
 #SBATCH --partition=gpu_long
-#SBATCH --gres=gpu:a6000:1
+#SBATCH --gres=gpu:3090:1
 #SBATCH --time=2:00:00
 #SBATCH --cpus-per-task=4
 set -euxo pipefail
