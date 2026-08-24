@@ -46,7 +46,7 @@ WIKITEXT_CANDIDATES = [
 HOTPOT_JSONL = WORKDIR / "hotpot_long" / "data" / "hotpot_long_dev_uniform.jsonl"
 
 LENGTHS = [512, 2048, 4096]
-N_EXAMPLES = 8
+N_EXAMPLES = 2
 QUERY_INDEX_FROM_END = 1
 FFT_WINDOW = "hann"
 FFT_STRIP_DC = True
