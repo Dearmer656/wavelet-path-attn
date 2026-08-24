@@ -46,7 +46,7 @@ WIKITEXT_CANDIDATES = [
 HOTPOT_JSONL = WORKDIR / "hotpot_long" / "data" / "hotpot_long_dev_uniform.jsonl"
 
 LENGTHS = [512, 2048, 4096]
-N_EXAMPLES = 2
+N_EXAMPLES = 1
 QUERY_INDEX_FROM_END = 1
 FFT_WINDOW = "hann"
 FFT_STRIP_DC = True
@@ -273,18 +273,34 @@ def main() -> None:
         tokenizer.pad_token = tokenizer.eos_token
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    pa_model = _load_model(PA_CKPT, PA_CFG).eval().to(device)
-    qwab_model = _load_model(QWAB_CKPT, QWAB_CFG).eval().to(device)
 
     results: dict[str, dict] = {}
     summary_lines: list[str] = []
     texts, source = _load_texts()
 
+    # Load, run, and fully free ONE model at a time -- keeping both PA-only and
+    # QWAB resident simultaneously OOMs even on a 48GB card at L=4096 (the huge
+    # [B,H,T,T] float32 intermediates inside path_ut_base_raw / the wavelet-bias
+    # masked_fill dwarf the model weights themselves).
+    per_model_spectra: dict[str, dict[int, dict]] = {"pa_only": {}, "qwab": {}}
+    for model_name, ckpt, cfg_path in (
+        ("pa_only", PA_CKPT, PA_CFG),
+        ("qwab", QWAB_CKPT, QWAB_CFG),
+    ):
+        model = _load_model(ckpt, cfg_path).eval().to(device)
+        for length in LENGTHS:
+            batch = _chunk_token_ids(tokenizer, texts, length, N_EXAMPLES).to(device)
+            per_model_spectra[model_name][length] = _collect_model_spectra(model, batch, model_name)
+            del batch
+            torch.cuda.empty_cache()
+        del model
+        torch.cuda.empty_cache()
+
     for length in LENGTHS:
-        batch = _chunk_token_ids(tokenizer, texts, length, N_EXAMPLES).to(device)
-        pa = _collect_model_spectra(pa_model, batch, "pa_only")
-        qwab = _collect_model_spectra(qwab_model, batch, "qwab")
-        results[str(length)] = {"pa_only": pa, "qwab": qwab}
+        results[str(length)] = {
+            "pa_only": per_model_spectra["pa_only"][length],
+            "qwab": per_model_spectra["qwab"][length],
+        }
 
         pa_mean = np.asarray(pa["mean_spectrum"], dtype=np.float64)
         qwab_mean = np.asarray(qwab["mean_spectrum"], dtype=np.float64)
