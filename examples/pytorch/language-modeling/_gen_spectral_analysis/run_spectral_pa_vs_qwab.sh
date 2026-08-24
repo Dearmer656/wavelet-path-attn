@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH --partition=gpu_long
-#SBATCH --gres=gpu:a6000:1
+#SBATCH --gres=gpu:6000:1
+#SBATCH --nodelist=elm72
 #SBATCH --time=4:00:00
 #SBATCH --cpus-per-task=4
 
