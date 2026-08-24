@@ -19,9 +19,11 @@ import torch
 
 sys.path.insert(0, "/project/nlp-work5/hongyu-s/transformers/src")
 sys.path.insert(0, "/project/nlp-work5/hongyu-s/flash-linear-attention")
+sys.path.insert(0, "/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling")
 
 import fla.models  # noqa: F401,E402  # registers PaTH attention with HF
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer  # noqa: E402
+import run_clm  # noqa: E402
 
 
 WORKDIR = Path("/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling")
@@ -100,6 +102,17 @@ def _load_eval_batch(tokenizer) -> tuple[torch.Tensor, str]:
 
 def _load_path_model() -> torch.nn.Module:
     config = AutoConfig.from_pretrained(PATH_CKPT)
+    # PATH_CKPT's own config.json leaves wavelet_ctxscale_k/scale_max_exp unset;
+    # fla's default GPT2Config schema fills them with inconsistent defaults
+    # (k=8 but scale_max_exp=14.0, a single scalar) that fail __init__ validation.
+    # Merge the actual training cfg (as run_clm.py does) to get consistent values --
+    # PA-only never uses them at runtime (wavelet_router=False) but __init__ still
+    # validates shapes unconditionally.
+    cfg = run_clm.read_kv_config(
+        "/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/"
+        "_gen_headline_extrap_curve/PAonly_s42_fixed.cfg"
+    )
+    run_clm.add_missing_to_hf_config(config, cfg)
     config.attn_implementation = "path_attn"
     config.use_cache = False
     return AutoModelForCausalLM.from_pretrained(PATH_CKPT, config=config)
