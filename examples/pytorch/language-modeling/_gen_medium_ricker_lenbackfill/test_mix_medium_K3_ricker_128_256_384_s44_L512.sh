@@ -2,7 +2,8 @@
 #SBATCH --job-name=hp2048_medK3_ricker_s44
 #SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/logs/%j_medK3_ricker_128_256_384_s44_ckpt15000_hotpot2048.txt
 #SBATCH --partition=gpu_long
-#SBATCH --gres=gpu:3090:4
+#SBATCH --gres=gpu:6000:1
+#SBATCH --nodelist=elm72
 #SBATCH --nodelist=elm54
 #SBATCH --exclude=elm66
 #SBATCH --time=24:00:00
@@ -24,5 +25,5 @@ BLOCK_SIZE=512
 OUTPUT_DIR="/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/results_uniform/mix_medium_K3_ricker_128_256_384_s44_ckpt15000/L${BLOCK_SIZE}"
 mkdir -p "${OUTPUT_DIR}"; cd "/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling"
 MASTER_PORT=$((12000 + SLURM_JOB_ID % 10000))
-torchrun --nproc_per_node=4 --master_port=${MASTER_PORT} ./run_clm.py --model_type gpt2 --tokenizer_name gpt2 --model_name_or_path "${CHECKPOINT}" --attn_implementation path_attn --bias_type ${BIAS_TYPE} --cfg_path "${CFG_PATH}" --dataset_name hotpot_qa --dataset_config_name distractor --hotpot_long_jsonl "${JSONL}" --hotpot_long_lengths ${BLOCK_SIZE} --do_eval --block_size ${BLOCK_SIZE} --per_device_eval_batch_size 1 --path_attn_impl pytorch --report_to none --output_dir "${OUTPUT_DIR}" --overwrite_output_dir --logging_dir "${OUTPUT_DIR}/log" --seed 44 --path_use_qk_norm false --path_use_low_rank_w true --path_use_w_shortconv false --path_conv_size 3 --path_conv_bias false --num_harmonics 1 --single_A_B True --use_beta_modulation False --use_soft_wavelet_fox False --wavelet_baseline_use False --use_forget_gate False --qk_rotation False --ablate_switch False --wavelet_router False --load_best_model_at_end False
+torchrun --nproc_per_node=1 --master_port=${MASTER_PORT} ./run_clm.py --model_type gpt2 --tokenizer_name gpt2 --model_name_or_path "${CHECKPOINT}" --attn_implementation path_attn --bias_type ${BIAS_TYPE} --cfg_path "${CFG_PATH}" --dataset_name hotpot_qa --dataset_config_name distractor --hotpot_long_jsonl "${JSONL}" --hotpot_long_lengths ${BLOCK_SIZE} --do_eval --block_size ${BLOCK_SIZE} --per_device_eval_batch_size 1 --path_attn_impl pytorch --report_to none --output_dir "${OUTPUT_DIR}" --overwrite_output_dir --logging_dir "${OUTPUT_DIR}/log" --seed 44 --path_use_qk_norm false --path_use_low_rank_w true --path_use_w_shortconv false --path_conv_size 3 --path_conv_bias false --num_harmonics 1 --single_A_B True --use_beta_modulation False --use_soft_wavelet_fox False --wavelet_baseline_use False --use_forget_gate False --qk_rotation False --ablate_switch False --wavelet_router False --load_best_model_at_end False
 echo "=== Done: mix_medium_K3_ricker_128_256_384_s44 L${BLOCK_SIZE} ==="
