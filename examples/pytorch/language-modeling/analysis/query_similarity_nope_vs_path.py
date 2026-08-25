@@ -51,7 +51,21 @@ def load_long_example(tokenizer, target_len):
 
 def load_nope_model():
     tok = AutoTokenizer.from_pretrained(NOPE_CKPT)
-    model = AutoModelForCausalLM.from_pretrained(NOPE_CKPT, attn_implementation="eager")
+    config = AutoConfig.from_pretrained(NOPE_CKPT)
+    # This May-2026 checkpoint has K=8 (router_band_num) but scale_max_exp=None
+    # (falls back to a single 16.0), which the current QWABBias.__init__ rejects.
+    # We only capture the router INPUT hidden_states (pre-scale), so the actual
+    # scale grid is irrelevant -- inject a length-8 placeholder just to pass the
+    # length-K validation. Router weight shape depends only on K=8, so the saved
+    # weights still load.
+    k = int(getattr(config, "wavelet_ctxscale_k", None) or getattr(config, "router_band_num", 8))
+    sme = getattr(config, "wavelet_ctxscale_scale_max_exp", None)
+    if not isinstance(sme, (list, tuple)) or len(sme) != k:
+        config.wavelet_ctxscale_scale_max_exp = [16.0] * k
+    config.wavelet_ctxscale_k = k
+    model = AutoModelForCausalLM.from_pretrained(
+        NOPE_CKPT, config=config, attn_implementation="eager"
+    )
     model.to(DEVICE).eval()
     return model, tok
 
