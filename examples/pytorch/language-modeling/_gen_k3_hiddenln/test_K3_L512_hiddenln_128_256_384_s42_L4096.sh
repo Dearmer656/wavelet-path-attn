@@ -2,7 +2,7 @@
 #SBATCH --job-name=hp2048_K3_hiddenln_s42
 #SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/logs/%j_K3_L512_hiddenln_128_256_384_s42_ckpt15000_hotpot2048.txt
 #SBATCH --partition=gpu_long
-#SBATCH --gres=gpu:3090:2
+#SBATCH --gres=gpu:a6000:2
 #SBATCH --time=24:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
