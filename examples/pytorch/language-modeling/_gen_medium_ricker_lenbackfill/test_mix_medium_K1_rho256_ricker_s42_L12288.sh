@@ -13,11 +13,11 @@ export HF_HOME=/cl/work5/hongyu-s/huggingfac
 export HF_DATASETS_CACHE=/cl/work5/hongyu-s/huggingfac/datasets
 export WANDB_DISABLED=true WANDB_MODE=disabled
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-JSONL="/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/data/hotpot_long_dev_uniform_8192only.jsonl"
+JSONL="/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/data/hotpot_long_dev_uniform_12288only.jsonl"
 CHECKPOINT="/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/mix_medium_K1_rho256_ricker_s42/checkpoint-15000"
 CFG_PATH="/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/mix_medium_K1_rho256_ricker_s42/supply_model.cfg"
 BIAS_TYPE=$(grep -oP '(?<=bias_type=")[^"]+' "${CFG_PATH}")
-BLOCK_SIZE=8192
+BLOCK_SIZE=12288
 [ -d "${CHECKPOINT}" ] || { echo "Missing ${CHECKPOINT}" >&2; exit 1; }
 OUTPUT_DIR="/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/results_uniform/mix_medium_K1_rho256_ricker_s42_ckpt15000/L${BLOCK_SIZE}"
 mkdir -p "${OUTPUT_DIR}"; cd "/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling"
