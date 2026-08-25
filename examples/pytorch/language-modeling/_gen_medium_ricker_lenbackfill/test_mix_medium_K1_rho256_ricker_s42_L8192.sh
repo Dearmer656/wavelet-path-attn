@@ -14,7 +14,7 @@ export HF_HOME=/cl/work5/hongyu-s/huggingfac
 export HF_DATASETS_CACHE=/cl/work5/hongyu-s/huggingfac/datasets
 export WANDB_DISABLED=true WANDB_MODE=disabled
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-JSONL="/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/data/hotpot_long_dev_uniform.jsonl"
+JSONL="/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/data/hotpot_long_dev_uniform_8192only.jsonl"
 CHECKPOINT="/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/mix_medium_K1_rho256_ricker_s42/checkpoint-15000"
 CFG_PATH="/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/mix_medium_K1_rho256_ricker_s42/supply_model.cfg"
 BIAS_TYPE=$(grep -oP '(?<=bias_type=")[^"]+' "${CFG_PATH}")
