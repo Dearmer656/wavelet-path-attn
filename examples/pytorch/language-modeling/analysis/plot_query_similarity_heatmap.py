@@ -15,7 +15,7 @@ with open(os.path.join(OUT_DIR, "summary.json")) as f:
     summary = json.load(f)
 
 fig, axes = plt.subplots(1, 2, figsize=(11, 5))
-for ax, mat, title in zip(axes, [path, nope], ["PaTH ($q-q_{corr}$)", "NoPE (hidden state)"]):
+for ax, mat, title in zip(axes, [path, nope], ["PaTH ($q^{corr}$)", "NoPE (hidden state)"]):
     im = ax.imshow(mat, vmin=0, vmax=1, cmap="viridis", origin="lower")
     ax.axvline(L_TRAIN, color="red", linewidth=1, linestyle="--")
     ax.axhline(L_TRAIN, color="red", linewidth=1, linestyle="--")
@@ -40,13 +40,13 @@ r_path = summary["PaTH"]
 r_nope = summary["NoPE"]
 print(r"""\begin{table}[t]
 \centering
-\caption{Mean off-diagonal cosine similarity of the QWAB router's conditioning feature across query positions, in-distribution ($\le L_{\text{train}}$) vs.\ extrapolation ($>L_{\text{train}}$). PaTH's $q-q_{\text{corr}}$ feature stays position-differentiated under extrapolation; NoPE's plain hidden state collapses toward positional indistinguishability. $N=100$ examples $\times$ 12 layers = 1200 (example, layer) pairs per cell.}
+\caption{Mean off-diagonal cosine similarity of the QWAB router's conditioning feature across query positions, in-distribution ($\le L_{\text{train}}$) vs.\ extrapolation ($>L_{\text{train}}$). PaTH's $q^{\text{corr}}$ feature stays position-differentiated under extrapolation; NoPE's plain hidden state collapses toward positional indistinguishability. $N=100$ examples $\times$ 12 layers = 1200 (example, layer) pairs per cell.}
 \label{tab:query-similarity-nope-vs-path}
 \begin{tabular}{lccc}
 \toprule
 Model & In-distribution ($\le 512$) & Extrapolation ($>512$) & $\Delta$ \\
 \midrule""")
-print(f"PaTH ($q-q_{{corr}}$) & {r_path['in_mean']:.4f} $\\pm$ {r_path['in_std']:.4f} & {r_path['extrap_mean']:.4f} $\\pm$ {r_path['extrap_std']:.4f} & +{r_path['extrap_mean']-r_path['in_mean']:.4f} \\\\")
+print(f"PaTH ($q^{{corr}}$) & {r_path['in_mean']:.4f} $\\pm$ {r_path['in_std']:.4f} & {r_path['extrap_mean']:.4f} $\\pm$ {r_path['extrap_std']:.4f} & +{r_path['extrap_mean']-r_path['in_mean']:.4f} \\\\")
 print(f"NoPE (hidden state) & {r_nope['in_mean']:.4f} $\\pm$ {r_nope['in_std']:.4f} & {r_nope['extrap_mean']:.4f} $\\pm$ {r_nope['extrap_std']:.4f} & \\textbf{{+{r_nope['extrap_mean']-r_nope['in_mean']:.4f}}} \\\\")
 print(r"""\bottomrule
 \end{tabular}
