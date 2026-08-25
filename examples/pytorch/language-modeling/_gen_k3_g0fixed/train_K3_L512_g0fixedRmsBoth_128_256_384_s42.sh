@@ -2,7 +2,8 @@
 #SBATCH --job-name=K3_L512_g0fixedRmsBoth_128_256_384_s42
 #SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/pat244_dual_temp/K3_L512_g0fixedRmsBoth_128_256_384_s42/train/%j_K3_L512_g0fixedRmsBoth_128_256_384_s42_train_eval.txt
 #SBATCH --partition=gpu_long
-#SBATCH --gres=gpu:a100:4
+#SBATCH --gres=gpu:6000:4
+#SBATCH --nodelist=elm72
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --time=100:00:00
