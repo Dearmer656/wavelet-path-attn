@@ -2,7 +2,8 @@
 #SBATCH --job-name=hp12288triton_medK1_rho256_ricker_s43
 #SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/logs/%j_medK1_rho256_ricker_s43_ckpt15000_hotpot2048.txt
 #SBATCH --partition=gpu_long
-#SBATCH --gres=gpu:a6000:1
+#SBATCH --gres=gpu:6000:1
+#SBATCH --nodelist=elm71
 #SBATCH --time=24:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
