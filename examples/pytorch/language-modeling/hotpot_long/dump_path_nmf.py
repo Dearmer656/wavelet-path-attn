@@ -1,24 +1,5 @@
 #!/usr/bin/env python3
-"""
-dump_path_nmf.py — PAT-186: NMF-based latent motif decomposition of PaTH pre-softmax logits.
-
-Pipeline (L1 pilot, L512 only):
-  1. Load GPT-2 small PaTH checkpoint with _nmf_capture=True on PaTHAttention layers.
-  2. For each case, run forward pass, collect (E_base_raw * scale) per layer/head.
-  3. Preprocess each [T,T] logit map:
-       robust ReLU normalization (row-wise, causal-valid positions only)
-       → masked sum pooling to MxM
-       → optional salient/top-pct filtering
-       → map-level L1 normalization
-       → flatten to [M*M]
-  4. Stack rows into X [N_maps, M*M]; fit sklearn NMF (R=16, init=nndsvda).
-  5. Save U.npy, V.npy, meta.json, row_meta.json, basis PNGs, usage CSV.
-
-Capture requires the 2-line _nmf_capture patch in path_attn.py:
-    if getattr(self, '_nmf_capture', False):
-        self._nmf_last_base_logits = (E_base_raw * scale).detach().to(torch.float32).cpu()
-inserted just before `P_base = None` in path_attention_with_wavelet_QH.
-"""
+"""NMF motif decomposition of PaTH logits, fit independently per layer."""
 
 import argparse
 import csv
@@ -30,37 +11,23 @@ from typing import List, Optional
 import numpy as np
 import torch
 from sklearn.decomposition import NMF as SklearnNMF
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoTokenizer
+
+from run_head_ablation_eval import build_capture_input_ids, find_path_attention_modules, load_path_attn_model
 
 
 def _git_sha(repo_path: str) -> str:
     try:
-        return subprocess.check_output(
-            ["git", "-C", repo_path, "rev-parse", "--short", "HEAD"],
-            stderr=subprocess.DEVNULL,
-        ).decode().strip()
+        return subprocess.check_output(["git", "-C", repo_path, "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL).decode().strip()
     except Exception:
         return "unknown"
 
 
-# ── preprocessing helpers ─────────────────────────────────────────────────────
-
-_NMF_MAX_NORMALIZED = 5.0   # clamp to prevent amplification when MAD≈0 (early rows, few keys)
-_NMF_MIN_VALID_KEYS = 4     # skip rows with fewer than this many valid keys
+_NMF_MAX_NORMALIZED = 5.0
+_NMF_MIN_VALID_KEYS = 4
 
 
 def robust_relu_normalize(logit_mat: torch.Tensor) -> torch.Tensor:
-    """Row-wise robust ReLU normalization over causal-valid positions (j ≤ i).
-
-    Rows with fewer than _NMF_MIN_VALID_KEYS valid keys are skipped (left as 0)
-    because median/MAD are unstable for very small samples and can produce
-    catastrophic amplification when MAD≈0 (s_i→1e-6).
-
-    Normalized values are clamped at _NMF_MAX_NORMALIZED to bound any residual
-    amplification effects.
-
-    Returns X_raw [T, T] with non-negative values; upper triangle zeroed.
-    """
     T = logit_mat.shape[0]
     out = torch.zeros(T, T, dtype=torch.float32)
     for i in range(T):
@@ -75,37 +42,25 @@ def robust_relu_normalize(logit_mat: torch.Tensor) -> torch.Tensor:
 
 
 def masked_sum_pool_2d(X_raw: torch.Tensor, M: int = 128) -> torch.Tensor:
-    """Pool [T, T] lower-triangular map to [M, M] by masked sum over causal cells."""
     T = X_raw.shape[0]
-    row_bin = torch.arange(T) * M // T   # [T], each in [0, M)
+    row_bin = torch.arange(T) * M // T
     col_bin = torch.arange(T) * M // T
-
-    # Build flat fine-grid indices and causal validity mask
-    fi = torch.arange(T).unsqueeze(1).expand(T, T).reshape(-1)   # fine row i
-    fj = torch.arange(T).unsqueeze(0).expand(T, T).reshape(-1)   # fine col j
-    valid = fj <= fi                                               # causal mask
-
+    fi = torch.arange(T).unsqueeze(1).expand(T, T).reshape(-1)
+    fj = torch.arange(T).unsqueeze(0).expand(T, T).reshape(-1)
+    valid = fj <= fi
     ri = row_bin.unsqueeze(1).expand(T, T).reshape(-1)
     ci = col_bin.unsqueeze(0).expand(T, T).reshape(-1)
     flat_idx = (ri * M + ci)[valid]
     flat_vals = X_raw.reshape(-1)[valid]
-
     out = torch.zeros(M * M, dtype=torch.float32)
     out.scatter_add_(0, flat_idx, flat_vals)
     return out.reshape(M, M)
 
 
 def salient_mass_filter(pool_map: torch.Tensor, alpha: float = 0.90) -> torch.Tensor:
-    """Row-wise cumulative-mass filter at threshold alpha.
-
-    For each coarse row r, only considers valid causal columns c ≤ r (lower
-    triangle of the 128×128 coarse grid). Upper-triangle cells remain 0.
-    Keeps cells with value >= the minimum value needed to cover alpha mass.
-    """
     M = pool_map.shape[0]
     out = torch.zeros_like(pool_map)
     for r in range(M):
-        # Only valid causal columns: c <= r
         row = pool_map[r, :r + 1]
         row_sum = row.sum().item()
         if row_sum < 1e-12:
@@ -123,10 +78,6 @@ def salient_mass_filter(pool_map: torch.Tensor, alpha: float = 0.90) -> torch.Te
 
 
 def top_pct_filter(pool_map: torch.Tensor, keep_frac: float) -> torch.Tensor:
-    """Row-wise top-fraction filter: keep top keep_frac fraction per coarse row.
-
-    Only considers causal-valid columns c ≤ r per row. Upper-triangle stays 0.
-    """
     M = pool_map.shape[0]
     out = torch.zeros_like(pool_map)
     for r in range(M):
@@ -146,12 +97,7 @@ def l1_normalize_map(pool_map: torch.Tensor) -> torch.Tensor:
     return pool_map / s
 
 
-def preprocess_logit_map(
-    logit_mat: torch.Tensor,
-    M: int = 128,
-    preprocessing: str = "salient",
-) -> Optional[torch.Tensor]:
-    """Full preprocessing for one [T, T] logit map → flattened [M*M] vector."""
+def preprocess_logit_map(logit_mat: torch.Tensor, M: int = 128, preprocessing: str = "salient") -> Optional[torch.Tensor]:
     X_raw = robust_relu_normalize(logit_mat)
     pool = masked_sum_pool_2d(X_raw, M=M)
     if preprocessing == "salient":
@@ -160,14 +106,11 @@ def preprocess_logit_map(
         pool = top_pct_filter(pool, keep_frac=0.10)
     elif preprocessing == "top20":
         pool = top_pct_filter(pool, keep_frac=0.20)
-    # "dense" = no filtering
     pool = l1_normalize_map(pool)
     if pool.sum().item() < 1e-12:
         return None
     return pool.reshape(-1).float()
 
-
-# ── text rendering (matches eval_hotpot_long.py) ─────────────────────────────
 
 def render_doc(title: str, sentences: list) -> str:
     return f"Title: {title}\n{' '.join(sentences).strip()}\n\n"
@@ -178,7 +121,100 @@ def render_prompt(ex: dict) -> str:
     return f"Question: {ex['question']}\n\nContext:\n{ctx}Answer:"
 
 
-# ── main ──────────────────────────────────────────────────────────────────────
+def load_cases(jsonl_path: Path, seq_len: int, n_case: int):
+    cases = []
+    with open(jsonl_path, encoding="utf-8") as f:
+        for line in f:
+            rec = json.loads(line)
+            if rec["meta"].get("target_total_tokens") == seq_len:
+                cases.append(rec)
+                if len(cases) >= n_case:
+                    break
+    return cases
+
+
+def load_cases_by_length(jsonl_path: Path, seq_len: int) -> list:
+    cases = []
+    with open(jsonl_path, encoding="utf-8") as f:
+        for line in f:
+            rec = json.loads(line)
+            if rec["meta"].get("target_total_tokens") == seq_len:
+                cases.append(rec)
+    return cases
+
+
+def fit_layer_dictionary(rows: list, meta_rows: list, rank: int, out_dir: Path, checkpoint: str, seq_len: int, layer_idx: int, M: int,
+                         preprocessing: str, capture_total: bool) -> dict:
+    if not rows:
+        raise RuntimeError(f"No rows for layer {layer_idx:02d}")
+    X = np.stack(rows, axis=0).astype(np.float32)
+    nmf = SklearnNMF(n_components=rank, init="nndsvda", max_iter=500, random_state=42, verbose=1)
+    U = nmf.fit_transform(X)
+    V = nmf.components_
+    recon_err = float(nmf.reconstruction_err_)
+
+    layer_dir = out_dir / f"layer_{layer_idx:02d}"
+    layer_dir.mkdir(parents=True, exist_ok=True)
+    np.save(layer_dir / "U.npy", U.astype(np.float32))
+    np.save(layer_dir / "V.npy", V.astype(np.float32))
+    meta = {
+        "checkpoint": checkpoint,
+        "seq_len": seq_len,
+        "layer_idx": layer_idx,
+        "rank": rank,
+        "pool_size": M,
+        "preprocessing": preprocessing,
+        "capture_total": capture_total,
+        "n_maps": len(rows),
+        "reconstruction_err": recon_err,
+        "git_sha_transformers": _git_sha(str(Path(__file__).parents[3])),
+    }
+    with open(layer_dir / "meta.json", "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2)
+
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        basis_dir = layer_dir / "basis_heatmaps"
+        basis_dir.mkdir(exist_ok=True)
+        for r in range(rank):
+            basis = V[r].reshape(M, M)
+            vmax = float(np.quantile(basis, 0.995))
+            fig, ax = plt.subplots(figsize=(4, 4))
+            im = ax.imshow(basis, cmap="viridis", vmin=0, vmax=max(vmax, 1e-8))
+            ax.set_title(f"Layer {layer_idx:02d} basis {r}", fontsize=9)
+            plt.colorbar(im, ax=ax)
+            plt.tight_layout()
+            plt.savefig(basis_dir / f"basis_{r:02d}.png", dpi=80)
+            plt.close(fig)
+    except Exception as e:
+        print(f"Warning: layer {layer_idx:02d} heatmap export failed: {e}")
+
+    usage_rows = []
+    meta_arr = np.array([[m["case_id"], m["layer"], m["head"]] for m in meta_rows], dtype=object)
+    for head in range(12):
+        mask = meta_arr[:, 2] == head
+        if mask.sum() == 0:
+            continue
+        U_sub = U[mask]
+        for r in range(rank):
+            usage_rows.append({
+                "layer": layer_idx,
+                "head": head,
+                "component": r,
+                "mean_usage": float(U_sub[:, r].mean()),
+                "std_usage": float(U_sub[:, r].std()),
+                "n_maps": int(mask.sum()),
+            })
+    with open(layer_dir / "usage_by_layer_head.csv", "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["layer", "head", "component", "mean_usage", "std_usage", "n_maps"])
+        writer.writeheader()
+        writer.writerows(usage_rows)
+
+    return {"U": U, "V": V, "meta": meta, "layer_dir": layer_dir, "recon_err": recon_err}
+
 
 def run(args):
     checkpoint = str(args.checkpoint)
@@ -189,54 +225,35 @@ def run(args):
     preprocessing = args.preprocessing
     jsonl_path = Path(args.jsonl)
     out_root = Path(args.out_root)
+    capture_total = bool(args.capture_total)
+    run_suffix = args.run_suffix or ""
     assert preprocessing in ("salient", "dense", "top10", "top20"), preprocessing
 
-    # Load cases
-    cases = []
-    with open(jsonl_path) as f:
-        for line in f:
-            rec = json.loads(line)
-            if rec["meta"].get("target_total_tokens") == seq_len:
-                cases.append(rec)
-                if len(cases) >= n_case:
-                    break
+    cases = load_cases(jsonl_path, seq_len, n_case)
     print(f"Loaded {len(cases)} cases for seq_len={seq_len}")
 
-    # Load model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Loading model from {checkpoint} on {device}")
     tokenizer = AutoTokenizer.from_pretrained(checkpoint, use_fast=False)
-    model = AutoModelForCausalLM.from_pretrained(
-        checkpoint,
-        dtype=torch.float32,
-        trust_remote_code=True,
-        attn_implementation="path_attn",
-    )
-    model.eval().to(device)
+    model = load_path_attn_model(checkpoint, device)
 
-    # Enable NMF logit capture on all PaTHAttention core layers
-    # Model structure: transformer.h[i].attn (GPT2PaTHAttention) → .core (PaTHAttention)
-    path_attn_layers = []
-    for name, module in model.named_modules():
-        if type(module).__name__ == "PaTHAttention":
-            module._nmf_capture = True
-            path_attn_layers.append((name, module))
-
+    path_attn_layers = find_path_attention_modules(model)
     n_layers = len(path_attn_layers)
-    print(f"Found {n_layers} PaTHAttention layers with _nmf_capture=True")
     if n_layers == 0:
-        raise RuntimeError("No PaTHAttention layers found; check model and PYTHONPATH.")
+        raise RuntimeError("No PaTHAttention layers found.")
+    head_dim = model.config.n_embd // model.config.n_head
+    head_dim_scale = head_dim ** -0.5
+    print(f"Found {n_layers} PaTHAttention layers")
 
-    # Output directory
-    ckpt_tag = Path(checkpoint).name  # e.g. checkpoint-15900
-    run_tag = f"L{seq_len}_{ckpt_tag}_{preprocessing}_R{rank}"
+    ckpt_tag = Path(checkpoint).name
+    cap_tag = "total" if capture_total else "paonly"
+    run_tag = f"L{seq_len}_{ckpt_tag}_{preprocessing}_R{rank}_{cap_tag}{run_suffix}_layerwise"
     out_dir = out_root / run_tag
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"Output dir: {out_dir}")
 
-    # Accumulate preprocessed rows
-    X_rows: List[np.ndarray] = []
-    row_meta: List[dict] = []
+    layer_rows = {layer_idx: [] for layer_idx in range(n_layers)}
+    row_meta = {layer_idx: [] for layer_idx in range(n_layers)}
 
     for case_idx, rec in enumerate(cases):
         prompt_str = render_prompt(rec)
@@ -250,56 +267,37 @@ def run(args):
         with torch.no_grad():
             _ = model(input_ids)
 
-        for layer_idx, (layer_name, module) in enumerate(path_attn_layers):
-            buf = getattr(module, "_nmf_last_base_logits", None)
+        for layer_idx, module in path_attn_layers:
+            attr_name = "_last_logits_full" if capture_total else "_last_logits_pa_only"
+            buf = getattr(module, attr_name, None)
             if buf is None:
-                raise RuntimeError(
-                    f"Layer {layer_idx} ({layer_name}) has no _nmf_last_base_logits "
-                    f"after forward pass (case {case_idx}). "
-                    f"Check that the _nmf_capture patch is applied in path_attn.py."
-                )
-            # buf: [B, H, T, T] on CPU float32
-            attn = buf[0, :, :actual_len, :actual_len]  # [H, T, T]
+                raise RuntimeError(f"Layer {layer_idx:02d} missing {attr_name} after forward pass.")
+            attn = (buf[0, :, :actual_len, :actual_len].to(torch.float32) * head_dim_scale).cpu()
             n_heads = attn.shape[0]
             for h in range(n_heads):
                 row = preprocess_logit_map(attn[h], M=M, preprocessing=preprocessing)
                 if row is None:
                     continue
-                X_rows.append(row.numpy())
-                row_meta.append({
-                    "case_id": case_idx, "layer": layer_idx, "head": h,
-                    "actual_len": actual_len, "seq_len": seq_len,
+                layer_rows[layer_idx].append(row.numpy())
+                row_meta[layer_idx].append({
+                    "case_id": case_idx,
+                    "layer": layer_idx,
+                    "head": h,
+                    "actual_len": actual_len,
+                    "seq_len": seq_len,
                 })
-
-        if (case_idx + 1) % 5 == 0 or (case_idx + 1) == len(cases):
-            print(f"  case {case_idx + 1}/{len(cases)} | rows so far: {len(X_rows)}")
-
         if device.type == "cuda":
             torch.cuda.empty_cache()
 
-    print(f"Total maps: {len(X_rows)}")
-    if not X_rows:
-        print("ERROR: no valid rows — check logit capture and preprocessing")
-        return
+    print(f"Total maps: {sum(len(v) for v in layer_rows.values())}")
+    for layer_idx in range(n_layers):
+        print(f"  layer {layer_idx:02d}: {len(layer_rows[layer_idx])} maps")
+        fit_layer_dictionary(
+            layer_rows[layer_idx], row_meta[layer_idx], rank, out_dir, checkpoint, seq_len, layer_idx, M, preprocessing, capture_total
+        )
+        with open(out_dir / f"layer_{layer_idx:02d}" / "row_meta.json", "w", encoding="utf-8") as f:
+            json.dump(row_meta[layer_idx], f)
 
-    X = np.stack(X_rows, axis=0).astype(np.float32)  # [N_maps, M*M]
-    print(f"X shape: {X.shape}, min={X.min():.4f}, max={X.max():.4f}, "
-          f"nnz_frac={float((X > 0).mean()):.3f}")
-
-    # Fit NMF
-    print(f"Fitting NMF R={rank}, init=nndsvda ...")
-    nmf = SklearnNMF(n_components=rank, init="nndsvda", max_iter=500,
-                     random_state=42, verbose=1)
-    U = nmf.fit_transform(X)   # [N_maps, R]
-    V = nmf.components_        # [R, M*M]
-    recon_err = float(nmf.reconstruction_err_)
-    print(f"Reconstruction error: {recon_err:.6f}")
-
-    # Save
-    np.save(out_dir / "U.npy", U.astype(np.float32))
-    np.save(out_dir / "V.npy", V.astype(np.float32))
-    with open(out_dir / "row_meta.json", "w") as f:
-        json.dump(row_meta, f)
     meta = {
         "checkpoint": checkpoint,
         "seq_len": seq_len,
@@ -307,71 +305,18 @@ def run(args):
         "rank": rank,
         "pool_size": M,
         "preprocessing": preprocessing,
-        "pooling_method": "masked_sum",
-        "salient_alpha": 0.90,
-        "min_valid_keys": _NMF_MIN_VALID_KEYS,
-        "max_normalized": _NMF_MAX_NORMALIZED,
-        "n_maps": len(X_rows),
+        "capture_total": capture_total,
         "n_layers": n_layers,
-        "reconstruction_err": recon_err,
         "git_sha_transformers": _git_sha(str(Path(__file__).parents[3])),
-        "git_sha_fla": _git_sha("/cl/work5/hongyu-s/flash-linear-attention"),
+        "run_tag": run_tag,
     }
-    with open(out_dir / "meta.json", "w") as f:
+    with open(out_dir / "meta.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
-
-    # Basis heatmaps
-    try:
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        basis_dir = out_dir / "basis_heatmaps"
-        basis_dir.mkdir(exist_ok=True)
-        for r in range(rank):
-            basis = V[r].reshape(M, M)
-            vmax = float(np.quantile(basis, 0.995))
-            fig, ax = plt.subplots(figsize=(4, 4))
-            im = ax.imshow(basis, cmap="viridis", vmin=0, vmax=max(vmax, 1e-8))
-            ax.set_title(f"Basis {r} ({preprocessing})", fontsize=9)
-            plt.colorbar(im, ax=ax)
-            plt.tight_layout()
-            plt.savefig(basis_dir / f"basis_{r:02d}.png", dpi=80)
-            plt.close(fig)
-        print(f"Saved {rank} basis PNGs to {basis_dir}")
-    except Exception as e:
-        print(f"Warning: heatmap export failed: {e}")
-
-    # Usage aggregation by layer/head
-    meta_arr = np.array([[m["case_id"], m["layer"], m["head"]] for m in row_meta])
-    usage_rows = []
-    for layer in range(n_layers):
-        for head in range(12):
-            mask = (meta_arr[:, 1] == layer) & (meta_arr[:, 2] == head)
-            if mask.sum() == 0:
-                continue
-            U_sub = U[mask]
-            n_sub = int(mask.sum())
-            for r in range(rank):
-                usage_rows.append({
-                    "layer": layer,
-                    "head": head,
-                    "component": r,
-                    "mean_usage": float(U_sub[:, r].mean()),
-                    "std_usage": float(U_sub[:, r].std()),
-                    "n_maps": n_sub,
-                })
-    usage_path = out_dir / "usage_by_layer_head.csv"
-    with open(usage_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["layer", "head", "component",
-                                               "mean_usage", "std_usage", "n_maps"])
-        writer.writeheader()
-        writer.writerows(usage_rows)
-    print(f"Saved usage table to {usage_path}")
     print(f"Done. Output: {out_dir}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="PAT-186: NMF motif decomp of PaTH logits")
+    parser = argparse.ArgumentParser(description="Per-layer NMF motif decomposition of PaTH logits")
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--jsonl", required=True)
     parser.add_argument("--out_root", required=True)
@@ -379,8 +324,9 @@ def main():
     parser.add_argument("--n_case", type=int, default=20)
     parser.add_argument("--rank", type=int, default=16)
     parser.add_argument("--pool_size", type=int, default=128)
-    parser.add_argument("--preprocessing", default="salient",
-                        choices=["salient", "dense", "top10", "top20"])
+    parser.add_argument("--preprocessing", default="salient", choices=["salient", "dense", "top10", "top20"])
+    parser.add_argument("--capture_total", action="store_true")
+    parser.add_argument("--run_suffix", default="")
     args = parser.parse_args()
     run(args)
 

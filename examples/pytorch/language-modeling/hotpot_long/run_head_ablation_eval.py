@@ -19,13 +19,18 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from analyze_pattern_basis_matching import l2_normalize_rows, resolve_nmf_run_dir
-from dump_path_nmf import preprocess_logit_map
 from eval_hotpot_long import best_f1_em, render_input
+# NOTE: preprocess_logit_map is imported lazily inside preprocess_head_features()
+# below, not at module scope -- dump_path_nmf.py imports load_path_attn_model /
+# build_capture_input_ids / find_path_attention_modules from THIS module, so a
+# top-level "from dump_path_nmf import ..." here would create a circular import
+# that fails at load time (whichever module is imported first hits the other
+# module before its names are defined).
 
 
 @dataclass(frozen=True)
@@ -134,6 +139,18 @@ def _capture_total_for_model(model_label: str) -> bool:
     return model_label == "QWAB"
 
 
+def load_path_attn_model(checkpoint: str, device: torch.device):
+    config = AutoConfig.from_pretrained(checkpoint, trust_remote_code=True)
+    config.attn_implementation = "path_attn"
+    model = AutoModelForCausalLM.from_pretrained(
+        checkpoint,
+        config=config,
+        dtype=torch.float32,
+        trust_remote_code=True,
+    )
+    return model.eval().to(device)
+
+
 def load_pattern_candidates(stage0_csv: Path, model: str, ext_len: int, rank: int) -> list:
     candidates = []
     with open(stage0_csv, newline="") as f:
@@ -221,6 +238,8 @@ def find_path_attention_modules(model) -> list:
     modules = []
     for _, module in model.named_modules():
         if type(module).__name__ == "PaTHAttention":
+            module._nmf_capture = False
+            module._nmf_capture_total = False
             modules.append(module)
     return list(enumerate(modules))
 
@@ -245,8 +264,8 @@ def clear_mask_heads(path_modules: list) -> None:
         module._mask_heads = None
 
 
-def capture_ext_logit_maps(model, path_modules: list, input_ids: torch.Tensor, capture_total: bool) -> dict:
-    attr_name = "_nmf_last_total_logits" if capture_total else "_nmf_last_base_logits"
+def capture_ext_logit_maps(model, path_modules: list, input_ids: torch.Tensor, capture_total: bool, head_dim_scale: float) -> dict:
+    attr_name = "_last_logits_full" if capture_total else "_last_logits_pa_only"
     clear_mask_heads(path_modules)
     _set_capture_flags(path_modules, capture_total)
     try:
@@ -255,13 +274,15 @@ def capture_ext_logit_maps(model, path_modules: list, input_ids: torch.Tensor, c
         out = {}
         for layer_idx, module in path_modules:
             buf = getattr(module, attr_name)
-            out[layer_idx] = buf[0].to(torch.float32).cpu().numpy()
+            out[layer_idx] = (buf[0].to(torch.float32) * head_dim_scale).cpu().numpy()
         return out
     finally:
         _clear_capture_flags(path_modules)
 
 
 def preprocess_head_features(logit_maps_by_layer: dict, pool_size: int, preprocessing: str):
+    from dump_path_nmf import preprocess_logit_map
+
     head_features = {}
     valid_heads = []
 
@@ -472,13 +493,9 @@ def run(args) -> None:
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    model = AutoModelForCausalLM.from_pretrained(
-        ext_run.checkpoint,
-        torch_dtype=torch.float32,
-        trust_remote_code=True,
-        attn_implementation="path_attn",
-    )
-    model.eval().to(device)
+    model = load_path_attn_model(ext_run.checkpoint, device)
+    head_dim = model.config.n_embd // model.config.n_head
+    head_dim_scale = head_dim ** -0.5
 
     path_modules = find_path_attention_modules(model)
     capture_total = _capture_total_for_model(args.model)
@@ -493,6 +510,7 @@ def run(args) -> None:
             path_modules=path_modules,
             input_ids=capture_input_ids,
             capture_total=capture_total,
+            head_dim_scale=head_dim_scale,
         )
         head_features, valid_heads = preprocess_head_features(
             logit_maps_by_layer=logit_maps_by_layer,
