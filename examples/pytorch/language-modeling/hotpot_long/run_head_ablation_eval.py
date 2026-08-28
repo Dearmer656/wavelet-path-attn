@@ -143,19 +143,25 @@ def load_path_attn_model(checkpoint: str, device: torch.device):
     config = AutoConfig.from_pretrained(checkpoint, trust_remote_code=True)
     config.attn_implementation = "path_attn"
     # Older checkpoints saved before the wavelet_ctxscale_k sweep (e.g. PA-only
-    # baselines with bias_type=None) have no wavelet_ctxscale_k in their saved
-    # config.json at all, so it silently falls back to fla's class default of 8
-    # -- which then fails _PaTHAttention.__init__'s internal consistency check
-    # against wavelet_ctxscale_scale_max_exp (whose own default is a bare
-    # scalar, only valid for K=1). The wavelet path is unused for these
-    # checkpoints (bias_type=None) so K itself is functionally irrelevant;
-    # force it to 1 to match the scalar scale_max_exp default and let
-    # construction succeed, but only when the checkpoint didn't explicitly
-    # save its own wavelet_ctxscale_k (never override an explicit K>1 config).
+    # baselines with bias_type=None) have neither wavelet_ctxscale_k nor
+    # wavelet_ctxscale_scale_max_exp in their saved config.json. fla's class
+    # default for K is 8 (_PaTHAttention.__init__), and the checkpoint's saved
+    # weights really were constructed at that K (confirmed by a state_dict
+    # shape mismatch when this was first tried with K forced to 1 -- do NOT
+    # override K, its true value is baked into the saved weight shapes).
+    # wavelet_ctxscale_scale_max_exp's own default (14.0, a bare scalar) is
+    # only valid for K=1 though, so with K=8 it fails _PaTHAttention.__init__'s
+    # shape check. The wavelet path is unused for these checkpoints anyway
+    # (bias_type=None), so the actual per-scale exponent values don't affect
+    # the forward output -- just supply a validly-shaped list so construction
+    # succeeds, but only when the checkpoint didn't explicitly save its own
+    # value (never override an explicit config).
     with open(Path(checkpoint) / "config.json", encoding="utf-8") as f:
         raw_config = json.load(f)
-    if "wavelet_ctxscale_k" not in raw_config:
-        config.wavelet_ctxscale_k = 1
+    if "wavelet_ctxscale_scale_max_exp" not in raw_config:
+        resolved_k = int(raw_config.get("wavelet_ctxscale_k", 8))
+        if resolved_k > 1:
+            config.wavelet_ctxscale_scale_max_exp = [14.0] * resolved_k
     model = AutoModelForCausalLM.from_pretrained(
         checkpoint,
         config=config,
