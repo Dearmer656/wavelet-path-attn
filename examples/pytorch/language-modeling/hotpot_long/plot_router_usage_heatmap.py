@@ -96,14 +96,16 @@ def _plot_set(panels, out_name, suptitle_prefix):
 
 
 def main_long():
-    # Extended lengths: small has real hotpot L4096 data; medium hotpot only
-    # reaches L2048 in dense pytorch (L4096 OOMs even a 48GB card) -- see
-    # PAT-253 notes. No medium L16384 panel here: the front-placed citation
-    # dataset (data/hotpot_long_dev.jsonl) tops out at L4096, so L16384
-    # would require the *_uniform_16384_large_pool.jsonl variant instead.
+    # Extended lengths: both small and medium now have real hotpot L4096 data
+    # (medium via cross-node 2xGPU head-parallel on elm72+elm73, since dense
+    # pytorch single-GPU OOMs medium at L4096) -- apples-to-apples comparison.
+    # No medium L16384 panel: the front-placed citation dataset
+    # (data/hotpot_long_dev.jsonl) tops out at L4096, and L8192/L16384 were
+    # confirmed OOM even with 2xGPU head-parallel (fp32 and bf16 both) -- see
+    # PAT-253 notes.
     panels = [
         ("small", "hotpot", "4096", "Small, HotpotQA, L4096"),
-        ("medium", "hotpot", "2048", "Medium, HotpotQA, L2048 (longest reachable, dense pytorch)"),
+        ("medium", "hotpot", "4096", "Medium, HotpotQA, L4096 (cross-node 2xGPU head-parallel)"),
     ]
     _plot_set(panels, "router_usage_heatmap_small_vs_medium_longlen.png",
               "K3 router usage (3-seed mean) by layer x scale, extended lengths")
