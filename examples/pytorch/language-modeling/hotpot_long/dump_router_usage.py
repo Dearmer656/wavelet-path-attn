@@ -118,9 +118,14 @@ def run(args):
             cases = load_cases_hotpot(args.jsonl, seq_len, args.n_case)
         print(f"Loaded {len(cases)} cases for seq_len={seq_len}")
 
-        # sum_usage[layer] = running sum over all (case, position); count[layer] = n positions summed
-        sum_usage = {li: None for li in range(n_layers)}
-        count = {li: 0 for li in range(n_layers)}
+        # sum_usage[(layer, qbin)] = running sum over all (case, position) in
+        # that 512-token position window; count[(layer, qbin)] = n positions
+        # summed. qbin = position // qbin_size, so qbin width is fixed at
+        # qbin_size tokens regardless of seq_len (finer than a fixed 3-way
+        # early/mid/late split).
+        qbin_size = args.qbin_size
+        sum_usage = {}
+        count = {}
 
         for ci, rec in enumerate(cases):
             if args.task == "xsum":
@@ -133,6 +138,8 @@ def run(args):
             input_ids = torch.tensor([full_ids], dtype=torch.long, device=device)
             with torch.no_grad():
                 _ = model(input_ids)
+            T = input_ids.shape[1]
+            qbin_of_pos = torch.arange(T) // qbin_size
             for layer_idx, (_, module) in enumerate(path_layers):
                 pi = getattr(module, "_last_router_pi", None)
                 if pi is None:
@@ -140,20 +147,24 @@ def run(args):
                         f"layer {layer_idx}: missing _last_router_pi -- this checkpoint's "
                         f"wavelet_mode may not be logit_bias_ctxscale_shift_v0 (K>1 router only)."
                     )
-                # pi: [B, T, K+1] -> mean over batch(=1) and T -> [K+1]
-                layer_mean = pi[0].mean(dim=0).cpu()
-                if sum_usage[layer_idx] is None:
-                    sum_usage[layer_idx] = torch.zeros_like(layer_mean)
-                sum_usage[layer_idx] += layer_mean * pi.shape[1]
-                count[layer_idx] += pi.shape[1]
+                pi_cpu = pi[0].cpu()  # [T, K+1]
+                for qb in torch.unique(qbin_of_pos).tolist():
+                    sel = qbin_of_pos == qb
+                    key = (layer_idx, qb)
+                    vals = pi_cpu[sel].sum(dim=0)
+                    if key not in sum_usage:
+                        sum_usage[key] = torch.zeros_like(vals)
+                        count[key] = 0
+                    sum_usage[key] += vals
+                    count[key] += int(sel.sum().item())
             if device.type == "cuda":
                 torch.cuda.empty_cache()
             print(f"  case {ci+1}/{len(cases)} @ L={seq_len}")
 
-        K_plus_1 = sum_usage[0].shape[0]
+        K_plus_1 = next(iter(sum_usage.values())).shape[0]
         K = K_plus_1 - 1
-        for layer_idx in range(n_layers):
-            mean_usage = (sum_usage[layer_idx] / max(count[layer_idx], 1)).tolist()
+        for (layer_idx, qb), s in sum_usage.items():
+            mean_usage = (s / max(count[(layer_idx, qb)], 1)).tolist()
             all_rows.append({
                 "model_tag": args.model_tag,
                 "seed": args.seed,
@@ -161,13 +172,16 @@ def run(args):
                 "layer": layer_idx,
                 "n_layers": n_layers,
                 "K": K,
+                "qbin": qb,
+                "qbin_lo": qb * qbin_size,
+                "qbin_hi": qb * qbin_size + qbin_size,
                 "null_usage": mean_usage[0],
                 **{f"scale{ki}_usage": mean_usage[ki + 1] for ki in range(K)},
             })
 
     out_path = Path(args.out_csv)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = ["model_tag", "seed", "seq_len", "layer", "n_layers", "K", "null_usage"] + [
+    fieldnames = ["model_tag", "seed", "seq_len", "layer", "n_layers", "K", "qbin", "qbin_lo", "qbin_hi", "null_usage"] + [
         f"scale{ki}_usage" for ki in range(K)
     ]
     with open(out_path, "w", newline="") as f:
@@ -192,6 +206,10 @@ def main():
              "/cl/work5/hongyu-s/fact-check-summarization/xsum_test_filter_level2_official_style.jsonl",
     )
     p.add_argument("--out_csv", required=True)
+    p.add_argument("--qbin_size", type=int, default=512,
+                    help="position-bin width in tokens; usage is aggregated per "
+                         "[qbin*qbin_size, (qbin+1)*qbin_size) window instead of "
+                         "collapsed over the whole sequence.")
     p.add_argument("--dtype", choices=["fp32", "bf16"], default="fp32",
                     help="bf16 roughly halves memory; use for the medium model at L=4096, "
                          "which OOMs a 48GB card in fp32 purely from the model's own forward "
