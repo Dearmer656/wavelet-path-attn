@@ -1,21 +1,25 @@
 #!/usr/bin/env python3
 """PAT-254 Task 1, acceptance criterion 2: causal-subtraction ablation.
 
-Fit phase (disjoint "fit pool", N_fit cases): compute per-layer average
-D = A^Q-off - A^PA (mean over heads, causal-masked, mean-centered) and its
-projection onto (a) the real rank-1 wavelet Psi and (b) the matched DCT-rank1
-control. These give two FIXED [T,T] ablation matrices per layer:
-  delta_real[l] = D_avg[l] @ P_real[l]
-  delta_dct[l]  = D_avg[l] @ P_dct[l]
+Per-example design (fixes a real cross-example length-alignment bug found in
+an earlier fit-pool/eval-pool version: prompt+answer routinely runs a few to
+a few dozen tokens LONGER than target_total_tokens once "Question:...
+Context:...Answer:" wrapping is added -- target_total_tokens is the CONTEXT
+budget, not the full rendered length. A fixed [seq_len,seq_len] delta fit at
+target_total_tokens and zero-padded onto a longer eval sequence leaves the
+actual answer-token query rows in the zero-padded region, so the ablation
+silently never touches the positions that matter. Fix: for EACH example,
+build D/Psi/delta at THAT example's own actual (untruncated) length, and
+ablate+eval the SAME example -- a per-example causal test, not a
+cross-example transplant. Per PAT-253's own eval convention, prompt+answer is
+never truncated to seq_len (cuts off "Answer:").
 
-Eval phase (disjoint "eval pool", N_eval cases, teacher-forced F1 over the
-answer span): for lambda in {0, 0.25, 0.5, 1}, run the QWAB checkpoint with
-do(null) (Q-off state) PLUS `_ctxscale_subtract_spec` subtracting
-lambda*delta[l] at every layer, and measure Delta F1 vs the lambda=0 (pure
-Q-off) baseline. Real-Psi subtraction removing MORE F1 than matched-rank
-DCT subtraction, especially at long length, is the acceptance signal per the
-issue; a flat/no difference corroborates Task 1's correlational finding that
-the wavelet-shaped component is a minor, not the dominant, piece of D.
+For each example: D = A^{Q-off} - A^{PA} (mean over heads, causal-masked,
+mean-centered), Psi_real from the real captured per-query shift/scale
+(median beta), Psi_dct = the rank-1 (constant) DCT control, both at this
+example's actual T. delta = D @ P_Psi. Then for lambda in {0,0.25,0.5,1},
+subtract lambda*delta from Q-off's own logits at every layer and measure
+teacher-forced F1 on the answer span, vs the lambda=0 (pure Q-off) baseline.
 """
 import argparse
 import csv
@@ -27,7 +31,6 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from scipy.fft import dct
 
 import sys
 
@@ -57,11 +60,6 @@ def projector(psi, eps=1e-6):
     r = psi.shape[1]
     gram = psi.T @ psi + eps * torch.eye(r, device=psi.device)
     return psi @ torch.linalg.inv(gram) @ psi.T
-
-
-def build_psi_dct(T, r, device):
-    basis = dct(np.eye(T), axis=0, norm="ortho")[:, :r]
-    return torch.tensor(basis, dtype=torch.float32, device=device)
 
 
 def _normalize(s):
@@ -107,92 +105,15 @@ def set_subtract(path_layers, deltas, lam):
             m._ctxscale_subtract_spec = {"enabled": True, "delta": deltas[li], "lambda": lam}
 
 
-def fit_deltas(pa_model, pa_layers, qwab_model, qwab_layers, tokenizer, fit_cases, seq_len, device):
-    T = seq_len
-    cmask = causal_mask(T, device)
-    n_layers = len(pa_layers)
-    D_sum = [torch.zeros(T, T, device=device) for _ in range(n_layers)]
-    beta_sum = [0.0] * n_layers
-    scale_val = [128.0] * n_layers
-    n_used = 0
-    for rec in fit_cases:
-        prompt_ids = tokenizer(render_prompt_hotpot(rec), add_special_tokens=False)["input_ids"]
-        answer_ids = tokenizer(f" {rec['answer']}", add_special_tokens=False)["input_ids"]
-        full_ids = (prompt_ids + answer_ids)[:T]
-        if len(full_ids) < T:
-            continue
-        input_ids = torch.tensor([full_ids], dtype=torch.long, device=device)
-        with torch.no_grad():
-            _ = pa_model(input_ids)
-        A_PA = [capture_A(m) * cmask for _, m in pa_layers]
-        set_do_null(qwab_layers, True)
-        set_subtract(qwab_layers, None, 0.0)
-        with torch.no_grad():
-            _ = qwab_model(input_ids)
-        A_Qoff = [capture_A(m) * cmask for _, m in qwab_layers]
-        set_do_null(qwab_layers, False)
-        with torch.no_grad():
-            _ = qwab_model(input_ids)
-        for li, (_, m) in enumerate(qwab_layers):
-            bmap = getattr(m, "_last_ctxscale_beta_by_scale", None)
-            scales = getattr(m, "_last_ctxscale_scales", None)
-            if bmap is not None and 0 in bmap and scales is not None:
-                beta_sum[li] += float(bmap[0][0].median().item())
-                scale_val[li] = float(scales[0].item())
-            D_sum[li] += A_Qoff[li] - A_PA[li]
-        n_used += 1
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-    assert n_used > 0
-    D_avg = [d / n_used for d in D_sum]
-    beta_avg = [b / n_used for b in beta_sum]
-
-    deltas_real, deltas_dct = [], []
-    diff = torch.arange(T, device=device, dtype=torch.float32)
-    for li in range(n_layers):
-        D = D_avg[li]
-        valid = cmask.bool()
-        D = torch.where(valid, D - D[valid].mean(), D)
-        u = (diff - beta_avg[li]) / max(scale_val[li], 1e-6)
-        psi_real = ricker(u).view(T, 1)
-        P_real = projector(psi_real)
-        deltas_real.append((D @ P_real).detach())
-        P_dct = projector(build_psi_dct(T, 1, device))
-        deltas_dct.append((D @ P_dct).detach())
-    return deltas_real, deltas_dct, n_used
-
-
-def eval_f1(qwab_model, qwab_layers, tokenizer, eval_cases, seq_len, device, deltas, lam):
-    set_do_null(qwab_layers, True)
-    set_subtract(qwab_layers, deltas, lam)
-    f1s = []
-    for rec in eval_cases:
-        prompt_ids = tokenizer(render_prompt_hotpot(rec), add_special_tokens=False)["input_ids"]
-        answer_ids = tokenizer(f" {rec['answer']}", add_special_tokens=False)["input_ids"]
-        # PAT-253 lesson (feedback_hotpot_eval_no_truncate): never truncate
-        # prompt+answer to seq_len -- target_total_tokens is the CONTEXT
-        # budget, not the full rendered prompt, so the wrapped prompt
-        # ("Question:...Context:...Answer:") routinely exceeds seq_len by a
-        # few-to-dozens of tokens; slicing to seq_len cuts off "Answer:" and
-        # the answer itself. Use the natural (untruncated) length instead --
-        # the fixed [seq_len,seq_len] ablation delta gets auto-padded to
-        # match by the _ctxscale_subtract_spec hook in path_attn.py.
-        full_ids = prompt_ids + answer_ids
-        if len(answer_ids) == 0:
-            continue
-        ans_len = len(answer_ids)
-        input_ids = torch.tensor([full_ids], dtype=torch.long, device=device)
-        with torch.no_grad():
-            out = qwab_model(input_ids)
-        logits = out.logits[0]  # [T, V]
-        ans_start = len(full_ids) - ans_len
-        pred_ids = logits[ans_start - 1: ans_start - 1 + ans_len].argmax(dim=-1).tolist()
-        pred_text = tokenizer.decode(pred_ids, skip_special_tokens=True)
-        gold_text = rec["answer"]
-        f1s.append(_f1(pred_text, gold_text))
-    set_subtract(qwab_layers, None, 0.0)
-    set_do_null(qwab_layers, False)
-    return float(np.mean(f1s)) if f1s else float("nan"), len(f1s)
+def predict_f1(qwab_model, full_ids, ans_len, tokenizer, gold_text, device):
+    input_ids = torch.tensor([full_ids], dtype=torch.long, device=device)
+    with torch.no_grad():
+        out = qwab_model(input_ids)
+    logits = out.logits[0]
+    ans_start = len(full_ids) - ans_len
+    pred_ids = logits[ans_start - 1: ans_start - 1 + ans_len].argmax(dim=-1).tolist()
+    pred_text = tokenizer.decode(pred_ids, skip_special_tokens=True)
+    return _f1(pred_text, gold_text)
 
 
 def run(args):
@@ -210,36 +131,101 @@ def run(args):
     qwab_layers = get_path_layers(qwab_model)
     for _, m in qwab_layers:
         m._capture_debug_tensors = True
+    n_layers = len(qwab_layers)
 
-    all_cases = load_cases_hotpot(args.jsonl, args.seq_len, args.n_fit + args.n_eval)
-    fit_cases = all_cases[: args.n_fit]
-    eval_cases = all_cases[args.n_fit: args.n_fit + args.n_eval]
-    print(f"fit={len(fit_cases)} eval={len(eval_cases)} @ L={args.seq_len}")
-
-    deltas_real, deltas_dct, n_used = fit_deltas(pa_model, pa_layers, qwab_model, qwab_layers, tokenizer, fit_cases, args.seq_len, device)
-    print(f"fit done on {n_used} cases")
+    cases = load_cases_hotpot(args.jsonl, args.seq_len, args.n_case)
+    print(f"Loaded {len(cases)} cases (target_total_tokens={args.seq_len})")
 
     lambdas = [0.0, 0.25, 0.5, 1.0]
-    rows = []
-    for lam in lambdas:
-        f1_real, n1 = eval_f1(qwab_model, qwab_layers, tokenizer, eval_cases, args.seq_len, device, deltas_real, lam)
-        print(f"  lambda={lam} real: F1={f1_real:.4f} (n={n1})")
-        rows.append({"seq_len": args.seq_len, "control": "real_psi", "lambda": lam, "f1": f1_real, "n_eval": n1})
-        if lam > 0:
-            f1_dct, n2 = eval_f1(qwab_model, qwab_layers, tokenizer, eval_cases, args.seq_len, device, deltas_dct, lam)
-            print(f"  lambda={lam} dct:  F1={f1_dct:.4f} (n={n2})")
-            rows.append({"seq_len": args.seq_len, "control": "dct", "lambda": lam, "f1": f1_dct, "n_eval": n2})
+    per_case_rows = []
+    for ci, rec in enumerate(cases):
+        prompt_ids = tokenizer(render_prompt_hotpot(rec), add_special_tokens=False)["input_ids"]
+        answer_ids = tokenizer(f" {rec['answer']}", add_special_tokens=False)["input_ids"]
+        if len(answer_ids) == 0:
+            continue
+        full_ids = prompt_ids + answer_ids
+        ans_len = len(answer_ids)
+        T = len(full_ids)
+        gold_text = rec["answer"]
+
+        # --- A^PA ---
+        input_ids = torch.tensor([full_ids], dtype=torch.long, device=device)
+        with torch.no_grad():
+            _ = pa_model(input_ids)
+        cmask = causal_mask(T, device)
+        A_PA = [capture_A(m) * cmask for _, m in pa_layers]
+
+        # --- A^Qoff (do-null) + capture real beta/scale ---
+        set_do_null(qwab_layers, True)
+        set_subtract(qwab_layers, None, 0.0)
+        with torch.no_grad():
+            _ = qwab_model(input_ids)
+        A_Qoff = [capture_A(m) * cmask for _, m in qwab_layers]
+
+        set_do_null(qwab_layers, False)
+        with torch.no_grad():
+            _ = qwab_model(input_ids)
+        beta_med = []
+        scale_val = []
+        for _, m in qwab_layers:
+            bmap = getattr(m, "_last_ctxscale_beta_by_scale", None)
+            scales = getattr(m, "_last_ctxscale_scales", None)
+            if bmap is not None and 0 in bmap and scales is not None:
+                beta_med.append(float(bmap[0][0].median().item()))
+                scale_val.append(float(scales[0].item()))
+            else:
+                beta_med.append(0.0)
+                scale_val.append(128.0)
+
+        diff = torch.arange(T, device=device, dtype=torch.float32)
+        deltas_real, deltas_dct = [], []
+        valid = cmask.bool()
+        for li in range(n_layers):
+            D = A_Qoff[li] - A_PA[li]
+            D = torch.where(valid, D - D[valid].mean(), D)
+            u = (diff - beta_med[li]) / max(scale_val[li], 1e-6)
+            psi_real = ricker(u).view(T, 1)
+            deltas_real.append((D @ projector(psi_real)).detach())
+            psi_dct = torch.full((T, 1), 1.0 / (T ** 0.5), device=device)  # rank-1 DCT = constant basis fn
+            deltas_dct.append((D @ projector(psi_dct)).detach())
+
+        # --- ablate + eval, this same example ---
+        set_do_null(qwab_layers, True)
+        row = {"case_idx": ci, "T": T}
+        for lam in lambdas:
+            set_subtract(qwab_layers, deltas_real if lam > 0 else None, lam)
+            row[f"f1_real_lam{lam}"] = predict_f1(qwab_model, full_ids, ans_len, tokenizer, gold_text, device)
+            if lam > 0:
+                set_subtract(qwab_layers, deltas_dct, lam)
+                row[f"f1_dct_lam{lam}"] = predict_f1(qwab_model, full_ids, ans_len, tokenizer, gold_text, device)
+        set_subtract(qwab_layers, None, 0.0)
+        set_do_null(qwab_layers, False)
+
+        per_case_rows.append(row)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        print(f"  case {ci + 1}/{len(cases)}: {row}")
 
     out_csv = OUT_DIR / f"{args.model_tag}_L{args.seq_len}_causal_subtraction.csv"
+    fieldnames = list(per_case_rows[0].keys())
     with open(out_csv, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
-        w.writerows(rows)
-    print(f"wrote {out_csv}")
-    baseline_f1 = rows[0]["f1"]
-    summary = {"model_tag": args.model_tag, "seq_len": args.seq_len, "n_fit": n_used, "n_eval": len(eval_cases),
-               "baseline_qoff_f1": baseline_f1,
-               "rows": rows}
+        w.writerows(per_case_rows)
+    print(f"wrote {out_csv} ({len(per_case_rows)} rows)")
+
+    summary = {"model_tag": args.model_tag, "seq_len": args.seq_len, "n_case": len(per_case_rows)}
+    for lam in [0.25, 0.5, 1.0]:
+        base = np.array([r["f1_real_lam0.0"] for r in per_case_rows])
+        real = np.array([r[f"f1_real_lam{lam}"] for r in per_case_rows])
+        dct = np.array([r[f"f1_dct_lam{lam}"] for r in per_case_rows])
+        summary[f"lam{lam}"] = {
+            "baseline_f1_mean": float(base.mean()),
+            "real_f1_mean": float(real.mean()),
+            "dct_f1_mean": float(dct.mean()),
+            "delta_real": float((real - base).mean()),
+            "delta_dct": float((dct - base).mean()),
+        }
     out_json = OUT_DIR / f"{args.model_tag}_L{args.seq_len}_causal_subtraction_summary.json"
     with open(out_json, "w") as f:
         json.dump(summary, f, indent=2)
@@ -252,8 +238,7 @@ def main():
     p.add_argument("--qwab_checkpoint", required=True)
     p.add_argument("--model_tag", required=True)
     p.add_argument("--seq_len", type=int, required=True)
-    p.add_argument("--n_fit", type=int, default=10)
-    p.add_argument("--n_eval", type=int, default=30)
+    p.add_argument("--n_case", type=int, default=20)
     p.add_argument("--jsonl", default="/project/nlp-work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/data/hotpot_long_dev.jsonl")
     run(p.parse_args())
 
