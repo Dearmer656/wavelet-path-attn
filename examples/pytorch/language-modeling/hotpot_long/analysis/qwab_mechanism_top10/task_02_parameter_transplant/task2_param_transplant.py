@@ -184,13 +184,15 @@ def run(args):
     print(f"  QWAB(do-null) baseline (no transplant): F1={f1_qoff:.4f} (n={n_qoff})")
     rows.append({"tag": "Qoff_baseline", "group": "none", "layer_max": None, "n_replaced": 0, "f1": f1_qoff, "n_eval": n_qoff})
 
+    layer_maxes = [None] if not args.layer_maxes else [None] + [int(x) for x in args.layer_maxes.split(",")]
     for group in args.groups.split(","):
-        # direction 1: PA host + QWAB-trained group
-        eval_hybrid(pa_host, pa_host_layers, pa_sd, qwab_sd, group, None, "PAhost_plus_QWABgroup")
-        pa_host.load_state_dict(pa_sd, strict=False)  # reset
-        # direction 2: QWAB host + PA group
-        eval_hybrid(qwab_host, qwab_host_layers, qwab_sd, pa_sd, group, None, "QWABhost_plus_PAgroup")
-        qwab_host.load_state_dict(qwab_sd, strict=False)  # reset
+        for lm in layer_maxes:
+            # direction 1: PA host + QWAB-trained group
+            eval_hybrid(pa_host, pa_host_layers, pa_sd, qwab_sd, group, lm, "PAhost_plus_QWABgroup")
+            pa_host.load_state_dict(pa_sd, strict=False)  # reset
+            # direction 2: QWAB host + PA group
+            eval_hybrid(qwab_host, qwab_host_layers, qwab_sd, pa_sd, group, lm, "QWABhost_plus_PAgroup")
+            qwab_host.load_state_dict(qwab_sd, strict=False)  # reset
 
     out_csv = OUT_DIR / f"{args.model_tag}_L{args.seq_len}_transplant.csv"
     with open(out_csv, "w", newline="") as f:
@@ -209,6 +211,7 @@ def main():
     p.add_argument("--seq_len", type=int, required=True)
     p.add_argument("--n_case", type=int, default=20)
     p.add_argument("--groups", default="H,QKVO,MLP,LN,embed")
+    p.add_argument("--layer_maxes", default="", help="comma-separated layer-prefix cutoffs, e.g. 3,6,9 (full-model swap always included)")
     p.add_argument("--jsonl", default="/project/nlp-work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/data/hotpot_long_dev.jsonl")
     run(p.parse_args())
 
