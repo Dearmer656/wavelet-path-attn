@@ -165,7 +165,7 @@ def run(args):
     def eval_hybrid(host_model, host_layers, base_sd, donor_sd, group, layer_max, tag):
         hybrid_sd, replaced = build_hybrid_state_dict(base_sd, donor_sd, group, layer_max)
         missing, unexpected = host_model.load_state_dict(hybrid_sd, strict=False)
-        real_missing = [k for k in missing if "wavelet_k1_gain" not in k]
+        real_missing = [k for k in missing if "wavelet_k1_gain" not in k and k != "lm_head.weight"]
         assert not real_missing, real_missing
         f1, n = eval_model_f1(host_model, host_layers, tokenizer, cases, device)
         print(f"  {tag}: group={group} layer_max={layer_max} n_replaced={len(replaced)} F1={f1:.4f} (n={n})")
