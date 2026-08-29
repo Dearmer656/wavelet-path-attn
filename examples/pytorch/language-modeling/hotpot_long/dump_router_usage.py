@@ -72,6 +72,12 @@ def run(args):
     if n_layers == 0:
         raise RuntimeError("No PaTHAttention layers found.")
     print(f"Found {n_layers} PaTHAttention layers")
+    # We only need _last_router_pi (tiny, [B,T,K+1]) -- skip the expensive
+    # unconditional logits/value debug captures (full [B,H,T,T] fp32 per
+    # layer, retained for all layers simultaneously) that OOM a 48GB card on
+    # the medium model at L=4096.
+    for _, module in path_layers:
+        module._capture_debug_tensors = False
 
     seq_lens = [int(x) for x in args.seq_lens.split(",") if x.strip()]
     all_rows = []
@@ -133,7 +139,7 @@ def run(args):
         w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
         w.writerows(all_rows)
-    print(f"wrote {out_path} ({len(rows)} rows)")
+    print(f"wrote {out_path} ({len(all_rows)} rows)")
 
 
 def main():
