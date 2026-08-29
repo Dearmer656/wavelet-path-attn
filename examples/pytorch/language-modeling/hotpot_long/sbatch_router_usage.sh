@@ -7,7 +7,10 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 # Generic per-(model,seed) router-usage dump. Submit with
-# --export=ALL,CKPT=...,MODEL_TAG=...,SEED=...,JOB_TAG=...
+# --export=ALL,CKPT=...,MODEL_TAG=...,SEED=...,JOB_TAG=...,SEQ_LENS=...
+# SEQ_LENS defaults to 512,4096 if not exported (small model fits this in
+# fp32 on a 48GB card; medium needs SEQ_LENS=512,2048 -- L=4096 OOMs even a
+# 48GB card purely from the model's own forward computation).
 
 _slack() {
     python3 /project/nlp-work5/hongyu-s/gate1/scripts/notify_slack.py \
@@ -36,7 +39,7 @@ python dump_router_usage.py \
   --checkpoint "${CKPT}" \
   --model_tag "${MODEL_TAG}" \
   --seed "${SEED}" \
-  --seq_lens 512,4096 \
+  --seq_lens "${SEQ_LENS:-512,4096}" \
   --n_case 50 \
   --jsonl data/hotpot_long_dev.jsonl \
   --out_csv "analysis_outputs/router_usage/${JOB_TAG}.csv"

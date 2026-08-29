@@ -47,7 +47,7 @@ def get_path_layers(model):
     return path_layers
 
 
-def load_path_attn_model(checkpoint, device):
+def load_path_attn_model(checkpoint, device, dtype=torch.float32):
     config = AutoConfig.from_pretrained(checkpoint, trust_remote_code=True)
     config.attn_implementation = "path_attn"
     with open(Path(checkpoint) / "config.json", encoding="utf-8") as f:
@@ -57,7 +57,7 @@ def load_path_attn_model(checkpoint, device):
         if resolved_k > 1:
             config.wavelet_ctxscale_scale_max_exp = [14.0] * resolved_k
     model = AutoModelForCausalLM.from_pretrained(
-        checkpoint, config=config, dtype=torch.float32, trust_remote_code=True,
+        checkpoint, config=config, dtype=dtype, trust_remote_code=True,
     )
     return model.eval().to(device)
 
@@ -66,7 +66,8 @@ def run(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Loading {args.checkpoint} on {device}")
     tokenizer = AutoTokenizer.from_pretrained(args.checkpoint, use_fast=False)
-    model = load_path_attn_model(args.checkpoint, device)
+    dtype = torch.bfloat16 if args.dtype == "bf16" else torch.float32
+    model = load_path_attn_model(args.checkpoint, device, dtype=dtype)
     path_layers = get_path_layers(model)
     n_layers = len(path_layers)
     if n_layers == 0:
@@ -151,6 +152,10 @@ def main():
     p.add_argument("--n_case", type=int, default=50)
     p.add_argument("--jsonl", default="data/hotpot_long_dev.jsonl")
     p.add_argument("--out_csv", required=True)
+    p.add_argument("--dtype", choices=["fp32", "bf16"], default="fp32",
+                    help="bf16 roughly halves memory; use for the medium model at L=4096, "
+                         "which OOMs a 48GB card in fp32 purely from the model's own forward "
+                         "computation (independent of any debug captures).")
     run(p.parse_args())
 
 
