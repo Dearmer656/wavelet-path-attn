@@ -41,13 +41,20 @@ export WANDB_DISABLED=true
 cd /project/nlp-work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long
 
 SEQ_LENS="$(echo "${SEQ_LENS_PLUS:-512+4096}" | tr '+' ',')"
+TASK="${TASK:-hotpot}"
+if [ "${TASK}" = "xsum" ]; then
+  JSONL="${JSONL:-/cl/work5/hongyu-s/fact-check-summarization/xsum_test_filter_level2_official_style.jsonl}"
+else
+  JSONL="${JSONL:-data/hotpot_long_dev.jsonl}"
+fi
 python dump_router_usage.py \
   --checkpoint "${CKPT}" \
   --model_tag "${MODEL_TAG}" \
   --seed "${SEED}" \
+  --task "${TASK}" \
   --seq_lens "${SEQ_LENS}" \
   --n_case 50 \
-  --jsonl data/hotpot_long_dev.jsonl \
+  --jsonl "${JSONL}" \
   --out_csv "analysis_outputs/router_usage/${JOB_TAG}.csv"
 
 echo "=== DONE: router usage ${JOB_TAG} ==="
