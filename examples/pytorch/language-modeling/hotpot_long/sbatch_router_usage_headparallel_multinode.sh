@@ -50,6 +50,11 @@ MASTER_PORT=$((20000 + SLURM_JOB_ID % 10000))
 echo "MASTER_ADDR=${MASTER_ADDR} MASTER_PORT=${MASTER_PORT} NODELIST=${SLURM_JOB_NODELIST}"
 
 SEQ_LEN="${SEQ_LEN:-8192}"
+# Default JSONL: the uniform-only pool for this exact length. Override with
+# JSONL=data/hotpot_long_dev.jsonl for lengths <=4096 -- that's the paper's
+# canonical front-placed citation dataset and has real per-length cases up to
+# L4096 natively (no uniform-pool deviation needed at that length).
+JSONL="${JSONL:-data/hotpot_long_dev_uniform_${SEQ_LEN}only.jsonl}"
 
 srun torchrun \
   --nnodes=2 \
@@ -63,7 +68,7 @@ srun torchrun \
   --seed "${SEED}" \
   --seq_lens "${SEQ_LEN}" \
   --n_case "${N_CASE:-50}" \
-  --jsonl "data/hotpot_long_dev_uniform_${SEQ_LEN}only.jsonl" \
+  --jsonl "${JSONL}" \
   --out_csv "analysis_outputs/router_usage/${JOB_TAG}.csv" \
   --dtype "${DTYPE:-fp32}"
 
