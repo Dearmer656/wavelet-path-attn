@@ -2,7 +2,8 @@
 #SBATCH --job-name=pat254_task1
 #SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/logs/%j_pat254_task1.txt
 #SBATCH --partition=gpu_long
-#SBATCH --gres=gpu:6000:1
+#SBATCH --gres=gpu:p6000:1
+#SBATCH --nodelist=elm81
 #SBATCH --time=4:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
