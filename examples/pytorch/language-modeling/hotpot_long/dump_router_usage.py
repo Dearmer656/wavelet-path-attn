@@ -22,12 +22,12 @@ def render_doc(title, sentences):
     return f"Title: {title}\n{' '.join(sentences).strip()}\n\n"
 
 
-def render_prompt(ex):
+def render_prompt_hotpot(ex):
     ctx = "".join(render_doc(t, s) for t, s in ex["context"])
     return f"Question: {ex['question']}\n\nContext:\n{ctx}Answer:"
 
 
-def load_cases(jsonl_path, seq_len, n_case):
+def load_cases_hotpot(jsonl_path, seq_len, n_case):
     cases = []
     with open(jsonl_path) as f:
         for line in f:
@@ -36,6 +36,33 @@ def load_cases(jsonl_path, seq_len, n_case):
                 cases.append(rec)
                 if len(cases) >= n_case:
                     break
+    return cases
+
+
+# XSum: run_clm.py's prompt template (PROMPT_TPL at ~line 6138), approximated
+# here -- not a byte-exact reproduction of its bucket/cache pipeline, just
+# close enough for a router-usage forward pass. Uses summary_filtered (the
+# factuality-filtered target) as the "answer" continuation, matching the
+# hotpot prompt+answer pattern.
+XSUM_PROMPT_TPL = "Summarize the following document:\n{doc}\n\nSummary:"
+
+
+def render_prompt_xsum(ex):
+    return XSUM_PROMPT_TPL.format(doc=ex["document"])
+
+
+def load_cases_xsum(jsonl_path, n_case):
+    cases = []
+    with open(jsonl_path) as f:
+        for line in f:
+            rec = json.loads(line)
+            if rec.get("is_empty_after_filter", False):
+                continue
+            if not rec.get("summary_filtered"):
+                continue
+            cases.append(rec)
+            if len(cases) >= n_case:
+                break
     return cases
 
 
@@ -85,7 +112,10 @@ def run(args):
     K = None
 
     for seq_len in seq_lens:
-        cases = load_cases(args.jsonl, seq_len, args.n_case)
+        if args.task == "xsum":
+            cases = load_cases_xsum(args.jsonl, args.n_case)
+        else:
+            cases = load_cases_hotpot(args.jsonl, seq_len, args.n_case)
         print(f"Loaded {len(cases)} cases for seq_len={seq_len}")
 
         # sum_usage[layer] = running sum over all (case, position); count[layer] = n positions summed
@@ -93,8 +123,12 @@ def run(args):
         count = {li: 0 for li in range(n_layers)}
 
         for ci, rec in enumerate(cases):
-            prompt_ids = tokenizer(render_prompt(rec), add_special_tokens=False)["input_ids"]
-            answer_ids = tokenizer(f" {rec['answer']}", add_special_tokens=False)["input_ids"]
+            if args.task == "xsum":
+                prompt_ids = tokenizer(render_prompt_xsum(rec), add_special_tokens=False)["input_ids"]
+                answer_ids = tokenizer(f" {rec['summary_filtered']}", add_special_tokens=False)["input_ids"]
+            else:
+                prompt_ids = tokenizer(render_prompt_hotpot(rec), add_special_tokens=False)["input_ids"]
+                answer_ids = tokenizer(f" {rec['answer']}", add_special_tokens=False)["input_ids"]
             full_ids = (prompt_ids + answer_ids)[:seq_len]
             input_ids = torch.tensor([full_ids], dtype=torch.long, device=device)
             with torch.no_grad():
@@ -148,9 +182,15 @@ def main():
     p.add_argument("--checkpoint", required=True)
     p.add_argument("--model_tag", required=True, help="e.g. small or medium")
     p.add_argument("--seed", required=True)
+    p.add_argument("--task", choices=["hotpot", "xsum"], default="hotpot")
     p.add_argument("--seq_lens", default="512,4096")
     p.add_argument("--n_case", type=int, default=50)
-    p.add_argument("--jsonl", default="data/hotpot_long_dev.jsonl")
+    p.add_argument(
+        "--jsonl",
+        default="data/hotpot_long_dev.jsonl",
+        help="hotpot: data/hotpot_long_dev.jsonl (default). xsum: pass "
+             "/cl/work5/hongyu-s/fact-check-summarization/xsum_test_filter_level2_official_style.jsonl",
+    )
     p.add_argument("--out_csv", required=True)
     p.add_argument("--dtype", choices=["fp32", "bf16"], default="fp32",
                     help="bf16 roughly halves memory; use for the medium model at L=4096, "
