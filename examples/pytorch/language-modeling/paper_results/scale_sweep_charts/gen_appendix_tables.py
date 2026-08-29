@@ -1,0 +1,220 @@
+import statistics as st
+
+def ms(vals):
+    return st.mean(vals), st.pstdev(vals)
+
+# ============================================================
+# SMALL MODEL DATA
+# ============================================================
+small_hotpot = {
+"PaTH-only": {512:[(0.7618,0.5584),(0.7599,0.5606),(0.7657,0.5652)],
+              2048:[(0.7083,0.4785),(0.7146,0.4859),(0.7112,0.4816)],
+              4096:[(0.6292,0.3635),(0.6321,0.3739),(0.6314,0.3685)]},
+r"K1 $\rho{=}64$": {512:[(0.7658,0.5667),(0.7648,0.5641),(0.7618,0.5621)],
+          2048:[(0.7277,0.5064),(0.7170,0.4867),(0.7177,0.4913)],
+          4096:[(0.6667,0.4215),(0.6425,0.3854),(0.6569,0.4089)]},
+r"K1 $\rho{=}128$": {512:[(0.7639,0.5581),(0.7659,0.5678),(0.7663,0.5678)],
+           2048:[(0.7231,0.4987),(0.7294,0.5045),(0.7191,0.4928)],
+           4096:[(0.6719,0.4236),(0.6670,0.4120),(0.6675,0.4155)]},
+r"K1 $\rho{=}256$": {512:[(0.7627,0.5606),(0.7668,0.5678),(0.7694,0.5683)],
+           2048:[(0.7248,0.5001),(0.7279,0.5080),(0.7263,0.5007)],
+           4096:[(0.6683,0.4151),(0.6705,0.4246),(0.6684,0.4159)]},
+r"K1 $\rho{=}384$": {512:[(0.7653,0.5628),(0.7648,0.5625),(0.7654,0.5659)],
+           2048:[(0.7229,0.4997),(0.7110,0.4829),(0.7260,0.5020)],
+           4096:[(0.6620,0.4083),(0.6303,0.3617),(0.6742,0.4286)]},
+r"K1 $\rho{=}512$": {512:[(0.7654,0.5652),(0.7623,0.5602),(0.7659,0.5653)],
+           2048:[(0.7215,0.4984),(0.7117,0.4832),(0.7271,0.5057)],
+           4096:[(0.6533,0.3975),(0.6319,0.3677),(0.6586,0.4069)]},
+"K3 [128,256,384]": {512:[(0.7597,0.5604),(0.7675,0.5659),(0.7604,0.5558)],
+       2048:[(0.7278,0.5056),(0.7303,0.5094),(0.7268,0.5002)],
+       4096:[(0.6763,0.4335),(0.6758,0.4368),(0.6665,0.4165)]},
+}
+
+small_xsum = {
+"PaTH-only": {512:[(0.4197,0.1502,0.3834),(0.4170,0.1467,0.3807),(0.4210,0.1515,0.3860)],
+              1024:[(0.3842,0.1139,0.3428),(0.3794,0.1119,0.3382),(0.3884,0.1169,0.3473)],
+              1536:[(0.3432,0.0833,0.2984),(0.3415,0.0831,0.2956),(0.3474,0.0889,0.3036)]},
+r"K1 $\rho{=}64$": {512:[(0.4205,0.1513,0.3853),(0.4197,0.1505,0.3852),(0.4219,0.1526,0.3864)],
+          1024:[(0.3856,0.1163,0.3444),(0.3891,0.1168,0.3462),(0.3846,0.1154,0.3430)],
+          1536:[(0.3464,0.0869,0.3038),(0.3466,0.0870,0.3037),(0.3424,0.0852,0.2998)]},
+r"K1 $\rho{=}128$": {512:[(0.4205,0.1505,0.3851),(0.4219,0.1515,0.3858),(0.4221,0.1513,0.3862)],
+           1024:[(0.3881,0.1177,0.3469),(0.3876,0.1173,0.3467),(0.3887,0.1169,0.3472)],
+           1536:[(0.3445,0.0875,0.3014),(0.3474,0.0860,0.3038),(0.3493,0.0865,0.3033)]},
+r"K1 $\rho{=}256$": {512:[(0.4214,0.1518,0.3854),(0.4211,0.1509,0.3853),(0.4198,0.1504,0.3845)],
+           1024:[(0.3885,0.1172,0.3465),(0.3875,0.1168,0.3454),(0.3876,0.1182,0.3461)],
+           1536:[(0.3483,0.0886,0.3021),(0.3415,0.0849,0.2978),(0.3482,0.0905,0.3054)]},
+r"K1 $\rho{=}384$": {512:[(0.4208,0.1504,0.3850),(0.4220,0.1522,0.3870),(0.4213,0.1512,0.3856)],
+           1024:[(0.3869,0.1161,0.3453),(0.3879,0.1174,0.3463),(0.3883,0.1174,0.3468)],
+           1536:[(0.3464,0.0857,0.3000),(0.3428,0.0834,0.2985),(0.3462,0.0857,0.3010)]},
+r"K1 $\rho{=}512$": {512:[(0.4201,0.1507,0.3848),(0.4212,0.1508,0.3854),(0.4199,0.1493,0.3844)],
+           1024:[(0.3893,0.1176,0.3475),(0.3884,0.1178,0.3470),(0.3893,0.1191,0.3472)],
+           1536:[(0.3472,0.0859,0.3006),(0.3474,0.0872,0.3054),(0.3454,0.0855,0.3024)]},
+"K3 [128,256,384]": {512:[(0.4214,0.1512,0.3859),(0.4207,0.1507,0.3851),(0.4205,0.1507,0.3852)],
+       1024:[(0.3869,0.1169,0.3459),(0.3892,0.1176,0.3475),(0.3867,0.1159,0.3434)],
+       1536:[(0.3461,0.0848,0.3024),(0.3447,0.0881,0.3009),(0.3471,0.0881,0.3034)]},
+}
+
+# ============================================================
+# MEDIUM MODEL DATA (PA-only is s44 only, single seed)
+# ============================================================
+medium_hotpot = {
+"PaTH-only (s44)": {512:[(0.8167,0.6438)], 2048:[(0.8117,0.6380)], 4096:[(0.8067,0.6291)],
+                    8192:[(0.7895,0.6033)], 12288:[(0.7605,0.5621)], 16384:[(0.7305,0.5202)]},
+r"K1 $\rho{=}128$": {
+    512:[(0.8196,0.6505),(0.8142,0.6411),(0.8138,0.6417)],
+    2048:[(0.8154,0.6455),(0.8122,0.6392),(0.8094,0.6349)],
+    4096:[(0.8098,0.6356),(0.8101,0.6360),(0.8051,0.6285)],
+    8192:[(0.7985,0.6191),(0.7984,0.6203),(0.7863,0.5976)],
+    12288:[(0.7818,0.5961),(0.7814,0.5946),(0.7628,0.5664)],
+    16384:[(0.7630,0.5686),(0.7591,0.5630),(0.7309,0.5202)],
+},
+r"K1 $\rho{=}256$": {
+    512:[(0.8150,0.6452),(0.8147,0.6447),(0.8176,0.6447)],
+    2048:[(0.8113,0.6354),(0.8107,0.6387),(0.8132,0.6387)],
+    4096:[(0.8053,0.6269),(0.8090,0.6360),(0.8064,0.6296)],
+    8192:[(0.7968,0.6168),(0.7938,0.6137),(0.7929,0.6089)],
+    12288:[(0.7787,0.5894),(0.7719,0.5807),(0.7723,0.5810)],
+    16384:[(0.7550,0.5592),(0.7432,0.5391),(0.7481,0.5486)],
+},
+"K3 [128,256,384]": {
+    512:[(0.8161,0.6452),(0.8158,0.6434),(0.8155,0.6433)],
+    2048:[(0.8110,0.6396),(0.8123,0.6399),(0.8094,0.6326)],
+    4096:[(0.8079,0.6320),(0.8079,0.6339),(0.8039,0.6234)],
+    8192:[(0.7932,0.6095),(0.7906,0.6080),(0.7885,0.5979)],
+    12288:[(0.7767,0.5899),(0.7632,0.5673),(0.7636,0.5639)],
+    16384:[(0.7554,0.5607),(0.7246,0.5128),(0.7315,0.5195)],
+},
+}
+
+medium_xsum = {
+"PaTH-only (s44)": {512:[(0.4622,0.1865,0.4297)], 1024:[(0.4338,0.1547,0.3960)], 1536:[(0.3925,0.1179,0.3506)]},
+r"K1 $\rho{=}128$": {
+    512:[(0.4620,0.1876,0.4306),(0.4627,0.1871,0.4308),(0.4622,0.1872,0.4297)],
+    1024:[(0.4363,0.1552,0.3971),(0.4336,0.1546,0.3953),(0.4337,0.1551,0.3969)],
+    1536:[(0.3940,0.1191,0.3521),(0.3911,0.1194,0.3504),(0.3920,0.1211,0.3525)],
+},
+r"K1 $\rho{=}256$": {
+    512:[(0.4626,0.1859,0.4288),(0.4628,0.1873,0.4308),(0.4618,0.1869,0.4296)],
+    1024:[(0.4353,0.1559,0.3972),(0.4337,0.1549,0.3955),(0.4363,0.1558,0.3985)],
+    1536:[(0.3940,0.1205,0.3518),(0.3956,0.1225,0.3544),(0.3936,0.1208,0.3521)],
+},
+"K3 [128,256,384]": {
+    512:[(0.4617,0.1862,0.4296),(0.4613,0.1865,0.4288),(0.4619,0.1865,0.4295)],
+    1024:[(0.4351,0.1544,0.3973),(0.4366,0.1554,0.3979),(0.4362,0.1570,0.3980)],
+    1536:[(0.3944,0.1173,0.3512),(0.3939,0.1195,0.3545),(0.3872,0.1167,0.3488)],
+},
+}
+
+def fmt(v):
+    return f"{v:.4f}"
+
+def make_hotpot_table(data, lengths, caption, label):
+    header_lens = " & ".join([f"\\multicolumn{{2}}{{c}}{{L{L}}}" for L in lengths])
+    header_metrics = " & ".join(["F1 & EM"]*len(lengths))
+    cmidrules = " ".join([f"\\cmidrule(lr){{{3+2*i}-{4+2*i}}}" for i in range(len(lengths))])
+    lines = []
+    lines.append(r"\begin{table}[t]")
+    lines.append(r"\centering")
+    lines.append(r"\small")
+    lines.append(r"\begin{tabular}{ll" + "cc"*len(lengths) + "}")
+    lines.append(r"\toprule")
+    lines.append("Config & Seed & " + header_lens + r" \\")
+    lines.append(cmidrules)
+    lines.append(" & & " + header_metrics + r" \\")
+    lines.append(r"\midrule")
+    for cfg, lens_d in data.items():
+        seeds = lens_d[lengths[0]]
+        nseed = len(seeds)
+        seed_labels = ["s42","s43","s44"][:nseed]
+        nrows = nseed + 1 if nseed > 1 else 1
+        for i, sl in enumerate(seed_labels):
+            row = []
+            for L in lengths:
+                f1, em = lens_d[L][i]
+                row.append(fmt(f1)); row.append(fmt(em))
+            cfg_cell = f"\\multirow{{{nrows}}}{{*}}{{{cfg}}}" if i == 0 else ""
+            seed_cell = sl if nseed > 1 else "--"
+            lines.append(f"{cfg_cell} & {seed_cell} & " + " & ".join(row) + r" \\")
+        if nseed > 1:
+            row = []
+            for L in lengths:
+                f1s = [v[0] for v in lens_d[L]]; ems = [v[1] for v in lens_d[L]]
+                mf, sf = ms(f1s); me, se = ms(ems)
+                row.append(f"{mf:.4f}$\\pm${sf:.4f}"); row.append(f"{me:.4f}$\\pm${se:.4f}")
+            lines.append(" & Mean$\\pm$Std & " + " & ".join(row) + r" \\")
+        lines.append(r"\midrule")
+    if lines[-1] == r"\midrule":
+        lines.pop()
+    lines.append(r"\bottomrule")
+    lines.append(r"\end{tabular}")
+    lines.append(f"\\caption{{{caption}}}")
+    lines.append(f"\\label{{{label}}}")
+    lines.append(r"\end{table}")
+    return "\n".join(lines)
+
+def make_xsum_table(data, lengths, caption, label):
+    header_lens = " & ".join([f"\\multicolumn{{3}}{{c}}{{@{L}}}" for L in lengths])
+    header_metrics = " & ".join(["R1 & R2 & RL"]*len(lengths))
+    cmidrules = " ".join([f"\\cmidrule(lr){{{3+3*i}-{5+3*i}}}" for i in range(len(lengths))])
+    lines = []
+    lines.append(r"\begin{table}[t]")
+    lines.append(r"\centering")
+    lines.append(r"\small")
+    lines.append(r"\begin{tabular}{ll" + "ccc"*len(lengths) + "}")
+    lines.append(r"\toprule")
+    lines.append("Config & Seed & " + header_lens + r" \\")
+    lines.append(cmidrules)
+    lines.append(" & & " + header_metrics + r" \\")
+    lines.append(r"\midrule")
+    for cfg, lens_d in data.items():
+        seeds = lens_d[lengths[0]]
+        nseed = len(seeds)
+        seed_labels = ["s42","s43","s44"][:nseed]
+        nrows = nseed + 1 if nseed > 1 else 1
+        for i, sl in enumerate(seed_labels):
+            row = []
+            for L in lengths:
+                r1, r2, rl = lens_d[L][i]
+                row.append(fmt(r1)); row.append(fmt(r2)); row.append(fmt(rl))
+            cfg_cell = f"\\multirow{{{nrows}}}{{*}}{{{cfg}}}" if i == 0 else ""
+            seed_cell = sl if nseed > 1 else "--"
+            lines.append(f"{cfg_cell} & {seed_cell} & " + " & ".join(row) + r" \\")
+        if nseed > 1:
+            row = []
+            for L in lengths:
+                r1s=[v[0] for v in lens_d[L]]; r2s=[v[1] for v in lens_d[L]]; rls=[v[2] for v in lens_d[L]]
+                m1,s1=ms(r1s); m2,s2=ms(r2s); ml,sl_=ms(rls)
+                row.append(f"{m1:.4f}$\\pm${s1:.4f}"); row.append(f"{m2:.4f}$\\pm${s2:.4f}"); row.append(f"{ml:.4f}$\\pm${sl_:.4f}")
+            lines.append(" & Mean$\\pm$Std & " + " & ".join(row) + r" \\")
+        lines.append(r"\midrule")
+    if lines[-1] == r"\midrule":
+        lines.pop()
+    lines.append(r"\bottomrule")
+    lines.append(r"\end{tabular}")
+    lines.append(f"\\caption{{{caption}}}")
+    lines.append(f"\\label{{{label}}}")
+    lines.append(r"\end{table}")
+    return "\n".join(lines)
+
+out = []
+out.append(make_hotpot_table(small_hotpot, [512,2048,4096],
+    "Small model (GPT-2 small), HotpotQA-Long F1/EM by scale, per-seed and 3-seed mean$\\pm$std. K1 $\\rho{=}256$'s seed 42 uses the reproducibility-rerun checkpoint (see main text).",
+    "tab:appendix_small_hotpot"))
+out.append("")
+out.append(make_xsum_table(small_xsum, [512,1024,1536],
+    "Small model (GPT-2 small), Filtered XSum ROUGE-1/2/L by scale, per-seed and 3-seed mean$\\pm$std.",
+    "tab:appendix_small_xsum"))
+out.append("")
+out.append(make_hotpot_table(medium_hotpot, [512,2048,4096,8192,12288,16384],
+    "Medium model (GPT-2 medium), HotpotQA-Long F1/EM by scale, per-seed and mean$\\pm$std. PaTH-only has only seed 44 (s42/s43 were not trained). L8192--L16384 use the triton kernel (bias-off / PaTH-only-equivalent inference), not real QWAB bias.",
+    "tab:appendix_medium_hotpot"))
+out.append("")
+out.append(make_xsum_table(medium_xsum, [512,1024,1536],
+    "Medium model (GPT-2 medium), Filtered XSum ROUGE-1/2/L by scale, per-seed and mean$\\pm$std. PaTH-only has only seed 44.",
+    "tab:appendix_medium_xsum"))
+
+result = "\n".join(out)
+with open("/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/paper_results/scale_sweep_charts/appendix_tables.tex", "w") as f:
+    f.write(result)
+print("done, wrote appendix_tables.tex")
+print(len(result), "chars")
