@@ -64,6 +64,7 @@ srun torchrun \
   --seq_lens "${SEQ_LEN}" \
   --n_case "${N_CASE:-50}" \
   --jsonl "data/hotpot_long_dev_uniform_${SEQ_LEN}only.jsonl" \
-  --out_csv "analysis_outputs/router_usage/${JOB_TAG}.csv"
+  --out_csv "analysis_outputs/router_usage/${JOB_TAG}.csv" \
+  --dtype "${DTYPE:-fp32}"
 
 echo "=== DONE: router usage cross-node headparallel ${JOB_TAG} ==="

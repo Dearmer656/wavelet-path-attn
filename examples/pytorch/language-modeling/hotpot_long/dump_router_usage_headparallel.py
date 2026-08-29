@@ -87,7 +87,8 @@ def run(args):
     device = torch.device("cuda", local_rank)
 
     tokenizer = AutoTokenizer.from_pretrained(args.checkpoint, use_fast=False)
-    model = load_path_attn_model(args.checkpoint, device, dtype=torch.float32)
+    dtype = torch.bfloat16 if args.dtype == "bf16" else torch.float32
+    model = load_path_attn_model(args.checkpoint, device, dtype=dtype)
     path_layers = get_path_layers(model)
     n_layers = len(path_layers)
     if n_layers == 0:
@@ -188,6 +189,7 @@ def main():
     )
     p.add_argument("--out_csv", required=True)
     p.add_argument("--qbin_size", type=int, default=512)
+    p.add_argument("--dtype", choices=["fp32", "bf16"], default="fp32")
     run(p.parse_args())
 
 
