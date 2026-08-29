@@ -1,0 +1,298 @@
+<title>HotpotQA Scale Sweep</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root{
+    --bg:#f4f5f8;
+    --surface:#ffffff;
+    --border:#dde1e9;
+    --grid:#e8eaf0;
+    --text:#1a1d24;
+    --text-muted:#5b6270;
+    --text-faint:#8991a1;
+    --baseline:#9096a3;
+    --rho128:#bcd6f2;
+    --rho256:#7fb0e6;
+    --rho384:#3f7fc9;
+    --rho512:#1c4a86;
+    --k3:#d9683a;
+    --shadow: 0 1px 2px rgba(20,24,32,0.04), 0 8px 24px rgba(20,24,32,0.06);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#13151a;
+      --surface:#1a1d24;
+      --border:#2b2f39;
+      --grid:#252932;
+      --text:#e9ebf1;
+      --text-muted:#a2a9b8;
+      --text-faint:#6d7484;
+      --baseline:#7d8494;
+      --rho128:#5d7699;
+      --rho256:#5e9de0;
+      --rho384:#78b5f5;
+      --rho512:#a9d4ff;
+      --k3:#f08a55;
+      --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 28px rgba(0,0,0,0.4);
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#13151a;
+    --surface:#1a1d24;
+    --border:#2b2f39;
+    --grid:#252932;
+    --text:#e9ebf1;
+    --text-muted:#a2a9b8;
+    --text-faint:#6d7484;
+    --baseline:#7d8494;
+    --rho128:#5d7699;
+    --rho256:#5e9de0;
+    --rho384:#78b5f5;
+    --rho512:#a9d4ff;
+    --k3:#f08a55;
+    --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 28px rgba(0,0,0,0.4);
+  }
+
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:var(--bg);
+    color:var(--text);
+    font-family:"IBM Plex Sans", system-ui, sans-serif;
+    padding:48px 20px;
+    display:flex;
+    justify-content:center;
+  }
+  .page{ width:100%; max-width:920px; display:flex; flex-direction:column; gap:20px; }
+
+  .card{
+    background:var(--surface);
+    border:1px solid var(--border);
+    border-radius:14px;
+    box-shadow:var(--shadow);
+    padding:32px 36px 28px;
+  }
+
+  header h1{
+    font-family:"Fraunces", Georgia, serif;
+    font-weight:600;
+    font-size:1.9rem;
+    letter-spacing:-0.01em;
+    margin:0 0 6px;
+    text-wrap:balance;
+  }
+  header p.sub{
+    margin:0;
+    color:var(--text-muted);
+    font-size:0.95rem;
+    max-width:62ch;
+  }
+  header .meta{
+    margin-top:14px;
+    display:flex;
+    gap:18px;
+    flex-wrap:wrap;
+    font-family:"IBM Plex Mono", ui-monospace, monospace;
+    font-size:0.72rem;
+    letter-spacing:0.03em;
+    text-transform:uppercase;
+    color:var(--text-faint);
+  }
+
+  .chart-wrap{ margin-top:8px; }
+  svg{ width:100%; height:auto; display:block; overflow:visible; }
+  .gridline{ stroke:var(--grid); stroke-width:1; }
+  .axis-line{ stroke:var(--border); stroke-width:1; }
+  .axis-label{ fill:var(--text-faint); font-family:"IBM Plex Mono", monospace; font-size:11px; }
+  .x-label{ fill:var(--text-muted); font-family:"IBM Plex Sans", sans-serif; font-size:12.5px; font-weight:500; }
+
+  .series-line{ fill:none; stroke-width:2.25; }
+  .series-line.baseline{ stroke-dasharray:5 4; stroke-width:2; }
+  .series-line.k3{ stroke-width:2.75; }
+  .marker{ stroke:var(--surface); stroke-width:1.5; }
+
+  .end-label{ font-family:"IBM Plex Mono", monospace; font-weight:500; }
+  .end-label .name{ font-family:"IBM Plex Sans", sans-serif; font-weight:500; font-size:12.5px; }
+  .end-label .val{ font-size:12px; font-variant-numeric: tabular-nums; }
+
+  .hover-dot{ opacity:0; pointer-events:none; }
+  .hover-line{ opacity:0; stroke:var(--text-faint); stroke-width:1; pointer-events:none; }
+
+  .tooltip{
+    position:absolute;
+    pointer-events:none;
+    background:var(--text);
+    color:var(--bg);
+    font-family:"IBM Plex Mono", monospace;
+    font-size:11.5px;
+    padding:8px 10px;
+    border-radius:8px;
+    line-height:1.5;
+    box-shadow:var(--shadow);
+    opacity:0;
+    transform:translate(-50%,calc(-100% - 12px));
+    white-space:nowrap;
+    z-index:5;
+    font-variant-numeric: tabular-nums;
+  }
+  .tooltip .row{ display:flex; gap:10px; justify-content:space-between; }
+  .tooltip .swatch{ display:inline-block; width:8px; height:8px; border-radius:2px; margin-right:6px; }
+
+  .legend{
+    display:flex; flex-wrap:wrap; gap:8px 22px;
+    margin-top:22px; padding-top:18px;
+    border-top:1px solid var(--border);
+  }
+  .legend-item{ display:flex; align-items:center; gap:8px; font-size:13px; color:var(--text-muted); }
+  .swatch{ width:16px; height:3px; border-radius:2px; flex:none; }
+  .swatch.dashed{ background:none; border-top:2px dashed var(--baseline); height:0; }
+  .legend-item b{ color:var(--text); font-weight:600; }
+
+  footer.note{
+    font-size:0.78rem;
+    color:var(--text-faint);
+    margin-top:2px;
+    padding:0 4px;
+  }
+</style>
+
+<div class="page">
+  <div class="card">
+    <header>
+      <h1>HotpotQA-Long F1 — Scale Sweep vs Multi-Scale</h1>
+      <p class="sub">Small model. K1 single-scale ρ ∈ {128, 256, 384, 512} and K3 [128, 256, 384] against the PaTH-only backbone, across three evaluation lengths. 3-seed mean.</p>
+      <div class="meta">
+        <span>PAT-253 · Single-Scale vs Multi-Scale</span>
+        <span>n = 3 seeds (s42/s43/s44)</span>
+      </div>
+    </header>
+    <div class="chart-wrap">
+      <svg id="chart" viewBox="0 0 860 460" role="img" aria-label="HotpotQA F1 by length for six configurations"></svg>
+    </div>
+    <div class="legend" id="legend"></div>
+  </div>
+  <footer class="note">Source: PAT-253, "Single-Scale versus Multi-Scale Wavelet Bias" (living comment). Draft for review — chart 1 of 3.</footer>
+</div>
+
+<div class="tooltip" id="tooltip"></div>
+
+<script>
+const LENGTHS = [512, 2048, 4096];
+const SERIES = [
+  { key:'pa',    name:'PaTH-only',        color:'var(--baseline)', cls:'baseline', values:[0.7625,0.7114,0.6310] },
+  { key:'r128',  name:'K1 ρ=128',         color:'var(--rho128)',   cls:'',         values:[0.7654,0.7239,0.6688] },
+  { key:'r256',  name:'K1 ρ=256',         color:'var(--rho256)',   cls:'',         values:[0.7679,0.7264,0.6655] },
+  { key:'r384',  name:'K1 ρ=384',         color:'var(--rho384)',   cls:'',         values:[0.7652,0.7200,0.6555] },
+  { key:'r512',  name:'K1 ρ=512',         color:'var(--rho512)',   cls:'',         values:[0.7645,0.7201,0.6480] },
+  { key:'k3',    name:'K3 [128,256,384]', color:'var(--k3)',       cls:'k3',       values:[0.7625,0.7283,0.6729] },
+];
+
+const svg = document.getElementById('chart');
+const NS = 'http://www.w3.org/2000/svg';
+const W = 860, H = 460;
+const M = { top: 18, right: 158, bottom: 44, left: 46 };
+const plotW = W - M.left - M.right;
+const plotH = H - M.top - M.bottom;
+
+const yMin = 0.60, yMax = 0.78;
+function yPix(v){ return M.top + plotH * (1 - (v - yMin) / (yMax - yMin)); }
+function xPix(i){ return M.left + (plotW * i) / (LENGTHS.length - 1); }
+
+function el(tag, attrs){
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  return e;
+}
+
+// gridlines + y axis ticks
+for (let v = 0.60; v <= 0.78 + 1e-9; v += 0.02){
+  const y = yPix(v);
+  svg.appendChild(el('line', { class:'gridline', x1:M.left, x2:W-M.right, y1:y, y2:y }));
+  const t = el('text', { class:'axis-label', x:M.left-10, y:y+4, 'text-anchor':'end' });
+  t.textContent = v.toFixed(2);
+  svg.appendChild(t);
+}
+svg.appendChild(el('line', { class:'axis-line', x1:M.left, x2:M.left, y1:M.top, y2:H-M.bottom }));
+svg.appendChild(el('line', { class:'axis-line', x1:M.left, x2:W-M.right, y1:H-M.bottom, y2:H-M.bottom }));
+
+// x axis labels
+LENGTHS.forEach((L,i) => {
+  const x = xPix(i);
+  const t = el('text', { class:'x-label', x:x, y:H-M.bottom+28, 'text-anchor':'middle' });
+  t.textContent = 'L' + L;
+  svg.appendChild(t);
+});
+
+// lines
+const hoverDots = [];
+SERIES.forEach(s => {
+  const pts = s.values.map((v,i) => [xPix(i), yPix(v)]);
+  const d = pts.map((p,i) => (i===0?'M':'L') + p[0].toFixed(2) + ',' + p[1].toFixed(2)).join(' ');
+  svg.appendChild(el('path', { class:'series-line ' + s.cls, d, stroke:s.color }));
+  pts.forEach((p,i) => {
+    svg.appendChild(el('circle', { class:'marker', cx:p[0], cy:p[1], r: s.key==='k3'?5:4, fill:s.color }));
+    const hd = el('circle', { class:'hover-dot', cx:p[0], cy:p[1], r:7, fill:'none', stroke:s.color, 'stroke-width':2, 'data-key':s.key, 'data-i':i });
+    svg.appendChild(hd);
+    hoverDots.push({ el:hd, x:p[0], y:p[1], series:s, i, value:s.values[i] });
+  });
+  // end label
+  const last = pts[pts.length-1];
+  const g = el('g', { class:'end-label', transform:`translate(${last[0]+12},${last[1]})` });
+  const nameT = el('text', { class:'name', x:0, y:-4, fill:s.color });
+  nameT.textContent = s.name;
+  const valT = el('text', { class:'val', x:0, y:12, fill:'var(--text-muted)' });
+  valT.textContent = s.values[s.values.length-1].toFixed(4);
+  g.appendChild(nameT); g.appendChild(valT);
+  svg.appendChild(g);
+});
+
+// vertical hover guide
+const hoverLine = el('line', { class:'hover-line', x1:0, x2:0, y1:M.top, y2:H-M.bottom });
+svg.appendChild(hoverLine);
+
+// legend
+const legend = document.getElementById('legend');
+SERIES.forEach(s => {
+  const item = document.createElement('div');
+  item.className = 'legend-item';
+  const sw = document.createElement('span');
+  sw.className = 'swatch' + (s.key==='pa' ? ' dashed' : '');
+  if (s.key !== 'pa') sw.style.background = s.color;
+  item.appendChild(sw);
+  const label = document.createElement('span');
+  label.innerHTML = '<b>' + s.name + '</b>';
+  item.appendChild(label);
+  legend.appendChild(item);
+});
+
+// tooltip interaction
+const tooltip = document.getElementById('tooltip');
+const wrap = document.querySelector('.chart-wrap');
+svg.addEventListener('mousemove', (ev) => {
+  const rect = svg.getBoundingClientRect();
+  const scale = W / rect.width;
+  const mx = (ev.clientX - rect.left) * scale;
+  let closestI = 0, best = Infinity;
+  LENGTHS.forEach((L,i) => { const d = Math.abs(xPix(i)-mx); if (d<best){best=d; closestI=i;} });
+  hoverLine.setAttribute('x1', xPix(closestI));
+  hoverLine.setAttribute('x2', xPix(closestI));
+  hoverLine.setAttribute('opacity', 1);
+  hoverDots.forEach(hd => hd.el.setAttribute('opacity', hd.i===closestI ? 1 : 0));
+
+  const rows = SERIES.map(s =>
+    `<div class="row"><span><span class="swatch" style="background:${s.color}"></span>${s.name}</span><span>${s.values[closestI].toFixed(4)}</span></div>`
+  ).join('');
+  tooltip.innerHTML = `<div style="font-weight:600;margin-bottom:4px;">L${LENGTHS[closestI]}</div>` + rows;
+
+  const svgRect = svg.getBoundingClientRect();
+  const px = svgRect.left + xPix(closestI) / scale;
+  const py = svgRect.top + yPix(0.78) / scale;
+  tooltip.style.left = px + 'px';
+  tooltip.style.top = py + 'px';
+  tooltip.style.opacity = 1;
+});
+svg.addEventListener('mouseleave', () => {
+  tooltip.style.opacity = 0;
+  hoverLine.setAttribute('opacity', 0);
+  hoverDots.forEach(hd => hd.el.setAttribute('opacity', 0));
+});
+</script>
