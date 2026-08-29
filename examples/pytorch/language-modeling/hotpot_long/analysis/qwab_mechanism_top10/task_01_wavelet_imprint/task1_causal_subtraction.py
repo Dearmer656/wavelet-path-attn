@@ -169,12 +169,18 @@ def eval_f1(qwab_model, qwab_layers, tokenizer, eval_cases, seq_len, device, del
     for rec in eval_cases:
         prompt_ids = tokenizer(render_prompt_hotpot(rec), add_special_tokens=False)["input_ids"]
         answer_ids = tokenizer(f" {rec['answer']}", add_special_tokens=False)["input_ids"]
-        full_ids = (prompt_ids + answer_ids)[:seq_len]
-        if len(full_ids) < seq_len or len(answer_ids) == 0:
+        # PAT-253 lesson (feedback_hotpot_eval_no_truncate): never truncate
+        # prompt+answer to seq_len -- target_total_tokens is the CONTEXT
+        # budget, not the full rendered prompt, so the wrapped prompt
+        # ("Question:...Context:...Answer:") routinely exceeds seq_len by a
+        # few-to-dozens of tokens; slicing to seq_len cuts off "Answer:" and
+        # the answer itself. Use the natural (untruncated) length instead --
+        # the fixed [seq_len,seq_len] ablation delta gets auto-padded to
+        # match by the _ctxscale_subtract_spec hook in path_attn.py.
+        full_ids = prompt_ids + answer_ids
+        if len(answer_ids) == 0:
             continue
-        ans_len = min(len(answer_ids), seq_len - len(prompt_ids))
-        if ans_len <= 0:
-            continue
+        ans_len = len(answer_ids)
         input_ids = torch.tensor([full_ids], dtype=torch.long, device=device)
         with torch.no_grad():
             out = qwab_model(input_ids)
