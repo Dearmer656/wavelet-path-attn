@@ -7,10 +7,15 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 # Generic per-(model,seed) router-usage dump. Submit with
-# --export=ALL,CKPT=...,MODEL_TAG=...,SEED=...,JOB_TAG=...,SEQ_LENS=...
-# SEQ_LENS defaults to 512,4096 if not exported (small model fits this in
-# fp32 on a 48GB card; medium needs SEQ_LENS=512,2048 -- L=4096 OOMs even a
-# 48GB card purely from the model's own forward computation).
+# --export=ALL,CKPT=...,MODEL_TAG=...,SEED=...,JOB_TAG=...,SEQ_LENS_PLUS=...
+# SEQ_LENS_PLUS uses '+' as the separator (e.g. "512+2048"), NOT comma --
+# sbatch's own --export parser splits on commas between different VAR=val
+# pairs and silently truncates a comma-containing value (confirmed: job
+# 572822 only got "512", dropping "2048", with no error). Converted back to
+# comma-separated for the python script below. Defaults to 512+4096 if not
+# exported (small model fits this in fp32 on a 48GB card; medium needs
+# SEQ_LENS_PLUS=512+2048 -- L=4096 OOMs even a 48GB card purely from the
+# model's own forward computation).
 
 _slack() {
     python3 /project/nlp-work5/hongyu-s/gate1/scripts/notify_slack.py \
@@ -35,11 +40,12 @@ export WANDB_DISABLED=true
 
 cd /project/nlp-work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long
 
+SEQ_LENS="$(echo "${SEQ_LENS_PLUS:-512+4096}" | tr '+' ',')"
 python dump_router_usage.py \
   --checkpoint "${CKPT}" \
   --model_tag "${MODEL_TAG}" \
   --seed "${SEED}" \
-  --seq_lens "${SEQ_LENS:-512,4096}" \
+  --seq_lens "${SEQ_LENS}" \
   --n_case 50 \
   --jsonl data/hotpot_long_dev.jsonl \
   --out_csv "analysis_outputs/router_usage/${JOB_TAG}.csv"
