@@ -43,7 +43,7 @@ Config & Seed & \multicolumn{2}{c}{L512} & \multicolumn{2}{c}{L2048} & \multicol
  & Mean$\pm$Std & 0.7625$\pm$0.0035 & 0.5607$\pm$0.0041 & 0.7283$\pm$0.0015 & 0.5051$\pm$0.0038 & 0.6729$\pm$0.0045 & 0.4289$\pm$0.0089 \\
 \bottomrule
 \end{tabular}
-\caption{Small model (GPT-2 small), HotpotQA-Long F1/EM by scale, per-seed and 3-seed mean$\pm$std. K1 $\rho{=}256$'s seed 42 uses the reproducibility-rerun checkpoint (see main text).}
+\caption{Small model: HotpotQA-Long F1/EM by scale.}
 \label{tab:appendix_small_hotpot}
 \end{table}
 
@@ -92,7 +92,7 @@ Config & Seed & \multicolumn{3}{c}{@512} & \multicolumn{3}{c}{@1024} & \multicol
  & Mean$\pm$Std & 0.4209$\pm$0.0004 & 0.1509$\pm$0.0002 & 0.3854$\pm$0.0004 & 0.3876$\pm$0.0011 & 0.1168$\pm$0.0007 & 0.3456$\pm$0.0017 & 0.3460$\pm$0.0010 & 0.0870$\pm$0.0016 & 0.3022$\pm$0.0010 \\
 \bottomrule
 \end{tabular}
-\caption{Small model (GPT-2 small), Filtered XSum ROUGE-1/2/L by scale, per-seed and 3-seed mean$\pm$std.}
+\caption{Small model: Filtered XSum ROUGE-1/2/L by scale.}
 \label{tab:appendix_small_xsum}
 \end{table}
 
@@ -123,7 +123,7 @@ Config & Seed & \multicolumn{2}{c}{L512} & \multicolumn{2}{c}{L2048} & \multicol
  & Mean$\pm$Std & 0.8158$\pm$0.0002 & 0.6440$\pm$0.0009 & 0.8109$\pm$0.0012 & 0.6374$\pm$0.0034 & 0.8066$\pm$0.0019 & 0.6298$\pm$0.0046 & 0.7908$\pm$0.0019 & 0.6051$\pm$0.0052 & 0.7678$\pm$0.0063 & 0.5737$\pm$0.0115 & 0.7372$\pm$0.0132 & 0.5310$\pm$0.0212 \\
 \bottomrule
 \end{tabular}
-\caption{Medium model (GPT-2 medium), HotpotQA-Long F1/EM by scale, per-seed and mean$\pm$std. PaTH-only has only seed 44 (s42/s43 were not trained). L8192--L16384 use the triton kernel (bias-off / PaTH-only-equivalent inference), not real QWAB bias.}
+\caption{Medium model: HotpotQA-Long F1/EM by scale.}
 \label{tab:appendix_medium_hotpot}
 \end{table}
 
@@ -154,6 +154,6 @@ Config & Seed & \multicolumn{3}{c}{@512} & \multicolumn{3}{c}{@1024} & \multicol
  & Mean$\pm$Std & 0.4616$\pm$0.0002 & 0.1864$\pm$0.0001 & 0.4293$\pm$0.0004 & 0.4360$\pm$0.0006 & 0.1556$\pm$0.0011 & 0.3977$\pm$0.0003 & 0.3918$\pm$0.0033 & 0.1178$\pm$0.0012 & 0.3515$\pm$0.0023 \\
 \bottomrule
 \end{tabular}
-\caption{Medium model (GPT-2 medium), Filtered XSum ROUGE-1/2/L by scale, per-seed and mean$\pm$std. PaTH-only has only seed 44.}
+\caption{Medium model: Filtered XSum ROUGE-1/2/L by scale.}
 \label{tab:appendix_medium_xsum}
 \end{table}

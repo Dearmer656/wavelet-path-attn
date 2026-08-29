@@ -198,19 +198,19 @@ def make_xsum_table(data, lengths, caption, label):
 
 out = []
 out.append(make_hotpot_table(small_hotpot, [512,2048,4096],
-    "Small model (GPT-2 small), HotpotQA-Long F1/EM by scale, per-seed and 3-seed mean$\\pm$std. K1 $\\rho{=}256$'s seed 42 uses the reproducibility-rerun checkpoint (see main text).",
+    "Small model: HotpotQA-Long F1/EM by scale.",
     "tab:appendix_small_hotpot"))
 out.append("")
 out.append(make_xsum_table(small_xsum, [512,1024,1536],
-    "Small model (GPT-2 small), Filtered XSum ROUGE-1/2/L by scale, per-seed and 3-seed mean$\\pm$std.",
+    "Small model: Filtered XSum ROUGE-1/2/L by scale.",
     "tab:appendix_small_xsum"))
 out.append("")
 out.append(make_hotpot_table(medium_hotpot, [512,2048,4096,8192,12288,16384],
-    "Medium model (GPT-2 medium), HotpotQA-Long F1/EM by scale, per-seed and mean$\\pm$std. PaTH-only has only seed 44 (s42/s43 were not trained). L8192--L16384 use the triton kernel (bias-off / PaTH-only-equivalent inference), not real QWAB bias.",
+    "Medium model: HotpotQA-Long F1/EM by scale.",
     "tab:appendix_medium_hotpot"))
 out.append("")
 out.append(make_xsum_table(medium_xsum, [512,1024,1536],
-    "Medium model (GPT-2 medium), Filtered XSum ROUGE-1/2/L by scale, per-seed and mean$\\pm$std. PaTH-only has only seed 44.",
+    "Medium model: Filtered XSum ROUGE-1/2/L by scale.",
     "tab:appendix_medium_xsum"))
 
 result = "\n".join(out)
