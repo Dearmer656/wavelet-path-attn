@@ -167,7 +167,16 @@ def run(args):
                 scale_by_layer.append(128.0)
 
         for layer_idx in range(n_layers):
-            D = A_Qoff[layer_idx] - A_PA[layer_idx]
+            D_raw = A_Qoff[layer_idx] - A_PA[layer_idx]
+            # Mean-center over the causally-valid support only: DCT's rank-1
+            # control is exactly the constant/DC basis vector, so an
+            # off-center D would let ANY rank-1 control (not just DCT)
+            # trivially "explain" a generic overall level-shift between PA
+            # and Q-off logits, which is a different (and much weaker) claim
+            # than "wavelet-shaped". Centering isolates the shape question.
+            valid = cmask.bool()
+            d_mean = D_raw[valid].mean()
+            D = torch.where(valid, D_raw - d_mean, D_raw)
             psi_real = build_psi_real(args.seq_len, beta_by_layer[layer_idx], scale_by_layer[layer_idx], device)
             P_real = projector(psi_real)
             R_real = r_wav(D, P_real)
