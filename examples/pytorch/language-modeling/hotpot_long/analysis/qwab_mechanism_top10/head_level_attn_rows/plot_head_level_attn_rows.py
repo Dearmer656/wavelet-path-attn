@@ -12,6 +12,7 @@ i.e. the last position of each 512-token block, so each row has a full causal
 key range aligned to the block boundaries.
 """
 import argparse
+import json
 from pathlib import Path
 
 import matplotlib
@@ -83,6 +84,20 @@ def run(args):
     H = pa_logits[layer_idx].shape[0]
     heads = list(range(H)) if args.heads == "all" else [int(h) for h in args.heads.split(",")]
 
+    # PA head h is compared against QWAB head match_map[h] -- NOT necessarily
+    # h itself. Head index is not a stable identity across two independently
+    # trained models; without this, roughly half the "differences" seen are
+    # just comparing functionally unrelated heads.
+    match_map = {h: h for h in range(H)}
+    match_sim = {h: None for h in range(H)}
+    if args.match_file:
+        with open(args.match_file) as f:
+            match_data = json.load(f)
+        for entry in match_data["matching"]:
+            match_map[entry["pa_head"]] = entry["qwab_head"]
+            match_sim[entry["pa_head"]] = entry["cosine_sim"]
+        print(f"Loaded head matching from {args.match_file}")
+
     query_rows = list(range(511, T, 512))
     print(f"layer={layer_idx} heads={heads} query_rows={query_rows}")
 
@@ -93,23 +108,26 @@ def run(args):
     n_cols = len(query_rows)
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(3.0 * n_cols, 2.2 * n_rows), squeeze=False)
     for hi, h in enumerate(heads):
+        qh = match_map[h]
         for qi, q in enumerate(query_rows):
             ax = axes[hi][qi]
             keys = np.arange(q + 1)
             pa_row = pa_attn[h, q, : q + 1].cpu().numpy()
-            qwab_row = qwab_attn[h, q, : q + 1].cpu().numpy()
+            qwab_row = qwab_attn[qh, q, : q + 1].cpu().numpy()
             ax.plot(keys, pa_row, color="tab:blue", lw=0.8, label="PA-only" if (hi == 0 and qi == 0) else None)
             ax.plot(keys, qwab_row, color="tab:orange", lw=0.8, alpha=0.8, label="QWAB (Q-on)" if (hi == 0 and qi == 0) else None)
             if hi == 0:
                 ax.set_title(f"q={q}", fontsize=9)
             if qi == 0:
-                ax.set_ylabel(f"head {h}", fontsize=9)
+                sim_str = f"\nsim={match_sim[h]:.2f}" if match_sim[h] is not None else ""
+                ax.set_ylabel(f"PA h{h} <-> QWAB h{qh}{sim_str}", fontsize=8)
             ax.set_xticks([])
             ax.set_yticks([])
     fig.legend(loc="upper right", fontsize=9)
-    fig.suptitle(f"Attention score per head, per query row (every 512 tok), layer={layer_idx}, L={T}, case={args.case_idx}", fontsize=11)
+    fig.suptitle(f"Attention score per MATCHED head pair, per query row (every 512 tok), layer={layer_idx}, L={T}, case={args.case_idx}", fontsize=11)
     fig.tight_layout(rect=[0, 0, 1, 0.96])
-    out_path = OUT_DIR / f"head_attn_rows_layer{layer_idx}_case{args.case_idx}.png"
+    tag = "matched" if args.match_file else "sameindex"
+    out_path = OUT_DIR / f"head_attn_rows_layer{layer_idx}_case{args.case_idx}_{tag}.png"
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
     print(f"wrote {out_path}")
@@ -117,15 +135,16 @@ def run(args):
     # Also dump per-head, per-query-row summary stats (max-attn key position, entropy, PA-vs-QWAB L1 diff)
     print("\nsummary (head, query, PA_argmax_key, QWAB_argmax_key, PA_entropy, QWAB_entropy, L1_diff):")
     for h in heads:
+        qh = match_map[h]
         for q in query_rows:
             pa_row = pa_attn[h, q, : q + 1]
-            qwab_row = qwab_attn[h, q, : q + 1]
+            qwab_row = qwab_attn[qh, q, : q + 1]
             pa_am = int(pa_row.argmax().item())
             qw_am = int(qwab_row.argmax().item())
             pa_ent = float(-(pa_row * (pa_row + 1e-12).log()).sum().item())
             qw_ent = float(-(qwab_row * (qwab_row + 1e-12).log()).sum().item())
             l1 = float((pa_row - qwab_row).abs().sum().item())
-            print(f"  h={h} q={q} PA_argmax={pa_am} QWAB_argmax={qw_am} PA_ent={pa_ent:.3f} QWAB_ent={qw_ent:.3f} L1={l1:.4f}")
+            print(f"  PAh={h} QWABh={qh} q={q} PA_argmax={pa_am} QWAB_argmax={qw_am} PA_ent={pa_ent:.3f} QWAB_ent={qw_ent:.3f} L1={l1:.4f}")
 
 
 def main():
@@ -137,6 +156,7 @@ def main():
     p.add_argument("--n_case", type=int, default=5)
     p.add_argument("--layer", type=int, default=6)
     p.add_argument("--heads", default="all")
+    p.add_argument("--match_file", default="", help="path to match_heads.py output JSON; if set, PA head h is compared against its matched QWAB head, not QWAB head h")
     p.add_argument("--jsonl", default="/project/nlp-work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/data/hotpot_long_dev.jsonl")
     run(p.parse_args())
 
