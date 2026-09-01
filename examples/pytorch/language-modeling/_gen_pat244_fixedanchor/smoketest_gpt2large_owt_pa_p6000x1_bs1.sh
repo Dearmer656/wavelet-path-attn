@@ -33,6 +33,7 @@ torchrun --nproc_per_node=1 --master_port="${MASTER_PORT}" ./run_clm.py \
   --block_size 512 \
   --do_train \
   --max_steps 50 \
+  --skip_memory_metrics False \
   --eval_strategy no \
   --logging_steps 1 \
   --save_steps 10000 \
