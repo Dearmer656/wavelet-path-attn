@@ -15,7 +15,7 @@ export WANDB_DISABLED=true WANDB_MODE=disabled
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 JSONL="/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/data/hotpot_long_dev_uniform.jsonl"
 CHECKPOINT="/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/pat244_dual_temp/K1_L512_rho256_fixedanchor_pct1p0_s42/checkpoint-15900"
-CFG_PATH="/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/pat244_dual_temp/K1_L512_rho256_fixedanchor_pct1p0_s42/supply_model.cfg"
+CFG_PATH="/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/_gen_pat244_fixedanchor/fixedanchor_pct1p0_true_frontpinned.cfg"
 BLOCK_SIZE=4096
 [ -d "${CHECKPOINT}" ] || { echo "Missing ${CHECKPOINT}" >&2; exit 1; }
 OUTPUT_DIR="/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/results_uniform/fixedanchor_pct1p0_s42_ckpt15900_frontpinned/L${BLOCK_SIZE}"
