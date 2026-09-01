@@ -22,6 +22,7 @@ router_mode="seperate"
 coe_mode="none"
 tau=1
 scale_type="none"
+wavelet_ctxscale_k=1
 CFG
 torchrun --nproc_per_node=1 --master_port="${MASTER_PORT}" ./run_clm.py \
   --model_type gpt2 \
