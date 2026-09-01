@@ -201,8 +201,8 @@ class ModelArguments:
     bias_type: str = field(
         default="wavelet",
         metadata={
-            "help": "Wavelet logit bias function: wavelet (Ricker) | sine | morlet | gaussian | linear.",
-            "choices": ["wavelet", "sine", "morlet", "gaussian", "linear"],
+            "help": "Wavelet logit bias function: wavelet (Ricker) | sine | morlet | gaussian | linear | ricker_cos | morlet_gaussamp.",
+            "choices": ["wavelet", "sine", "morlet", "gaussian", "linear", "ricker_cos", "morlet_gaussamp"],
         },
     )
     relative_type: Optional[str] = field(
@@ -3238,6 +3238,26 @@ def _build_title2sents(ex):
                 title2sents[str(t)] = sents
     return title2sents
 
+def _title_order_from_context(ex):
+    """Position of each title as it appears in ex["context"], for both the raw HF
+    hotpot_qa dict schema ({"title":[...], "sentences":[...]}) and the hotpot_long
+    custom list schema ([[title, sentences], ...]). Used only when a caller opts in
+    to respecting the input document order (e.g. offset-shift layout tests) --
+    build_context_budgeted's default behavior ignores this entirely."""
+    ctx = ex.get("context", None)
+    order = {}
+    if isinstance(ctx, dict) and "title" in ctx:
+        for i, t in enumerate(ctx["title"]):
+            order.setdefault(str(t), i)
+    elif isinstance(ctx, list):
+        for i, item in enumerate(ctx):
+            if isinstance(item, (list, tuple)) and len(item) == 2:
+                order.setdefault(str(item[0]), i)
+            elif isinstance(item, dict):
+                order.setdefault(str(item.get("title", "")), i)
+    return order
+
+
 def _get_supporting_pairs(ex):
     sf = ex.get("supporting_facts", None)
     if sf is None:
@@ -3252,11 +3272,106 @@ def _get_supporting_pairs(ex):
             pairs.append((str(item[0]), int(item[1])))
     return pairs
 
-def build_context_budgeted(ex, budget_tokens: int, prefer_same_title: bool = True, min_tokens: int = 0):
+
+def _reorder_context_for_target_placement(ex, target_pct: float):
+    """Reorder ex['context']'s title/sentences lists so the supporting-fact
+    titles sit at approximately target_pct through the document list (by
+    token-weighted position, not raw document count), as a contiguous block
+    preserving hop order. Content (which sentences belong to which title) is
+    unchanged -- only the document ORDER changes, so that a caller passing
+    respect_doc_order=True to build_context_budgeted gets an assembled context
+    with evidence actually placed near target_pct, instead of the default
+    front-pinned behavior.
+
+    Insertion point is chosen by character-length-weighted cumulative position
+    among the non-support docs (a cheap proxy for token length -- exact
+    tokenization here would be called once per training example and isn't
+    worth the overhead for a placement target that's inherently approximate).
+    Because docs have unequal length and only len(non_support_titles)+1
+    insertion slots exist, the realized placement will not land exactly on
+    target_pct -- this mirrors the target/actual distinction already used on
+    the eval side (placement_target_pct vs placement_actual_pct in
+    hotpot_long_dev_uniform.jsonl). The realized value is written back as
+    ex['_placement_actual_pct_train'] so it can be logged/audited instead of
+    silently assuming target==actual.
+
+    Returns a new ex dict (shallow copy); the input ex is not mutated. Falls
+    back to returning ex unchanged if the schema doesn't match or there is no
+    well-formed supporting-facts annotation to anchor the reorder on.
+    """
+    ctx = ex.get("context", None)
+    if not (isinstance(ctx, dict) and "title" in ctx and "sentences" in ctx):
+        return ex
+    titles = list(ctx["title"])
+    sentences = list(ctx["sentences"])
+    n_docs = len(titles)
+    if n_docs == 0:
+        return ex
+
+    sf_pairs = _get_supporting_pairs(ex)
+    if not sf_pairs:
+        return ex
+
+    # Unique support titles, in first-appearance (hop) order -- preserves
+    # which hop the model should read first, matching the un-reordered case.
+    support_titles = []
+    seen = set()
+    for t, _ in sf_pairs:
+        if t not in seen and t in titles:
+            support_titles.append(t)
+            seen.add(t)
+    n_support = len(support_titles)
+    if n_support == 0 or n_support >= n_docs:
+        return ex
+
+    non_support_titles = [t for t in titles if t not in seen]
+    title_to_sentences = {t: s for t, s in zip(titles, sentences)}
+
+    def _char_len(title):
+        return sum(len(s) for s in title_to_sentences.get(title, []))
+
+    nonsupport_lens = [_char_len(t) for t in non_support_titles]
+    support_len = sum(_char_len(t) for t in support_titles)
+    total_len = sum(nonsupport_lens) + support_len
+    if total_len <= 0:
+        target_start = round(float(target_pct) * len(non_support_titles))
+    else:
+        # Find the insertion slot k (0..n_nonsupport) whose cumulative-length
+        # fraction of the docs BEFORE it is closest to target_pct.
+        target_chars = float(target_pct) * total_len
+        cum = 0.0
+        best_k, best_gap = 0, abs(0.0 - target_chars)
+        for k, L in enumerate(nonsupport_lens, start=1):
+            cum += L
+            gap = abs(cum - target_chars)
+            if gap < best_gap:
+                best_gap, best_k = gap, k
+        target_start = best_k
+    target_start = max(0, min(len(non_support_titles), target_start))
+
+    new_title_order = non_support_titles[:target_start] + support_titles + non_support_titles[target_start:]
+    new_sentences = [title_to_sentences[t] for t in new_title_order]
+
+    realized_chars_before = sum(nonsupport_lens[:target_start])
+    realized_pct = (realized_chars_before / total_len) if total_len > 0 else float(target_pct)
+
+    new_ex = dict(ex)
+    new_ex["context"] = {"title": new_title_order, "sentences": new_sentences}
+    new_ex["_placement_actual_pct_train"] = realized_pct
+    return new_ex
+
+
+def build_context_budgeted(ex, budget_tokens: int, prefer_same_title: bool = True, min_tokens: int = 0,
+                            respect_doc_order: bool = False):
     """
     Always include supporting sentences. Then add shortest sentences until budget is hit.
     If prefer_same_title: fill from titles that appear in supporting_facts first.
     If min_tokens>0, do a second pass (longest-first) to try reaching the minimum length without exceeding budget.
+    If respect_doc_order: reorder the final selected sentences by their title's position in
+    ex["context"] (then sent_id) instead of insertion order (supporting-facts-first). Default
+    False preserves the project-standard behavior (evidence pinned to the front of context) --
+    only opt in for layout/position-sensitivity tests (e.g. offset-shift stress test) that need
+    the assembled prompt to actually reflect the input document order.
     Returns (context_text, context_token_ids, status).
     """
     # Clamp to avoid impossible targets (e.g., min_tokens > budget_tokens)
@@ -3354,14 +3469,11 @@ def build_context_budgeted(ex, budget_tokens: int, prefer_same_title: bool = Tru
             selected.append((t, sid, text, ids, L))
             total += add_cost
 
-    ctx = ex.get("context", None)
-    if isinstance(ctx, dict) and "title" in ctx:
-        title_order = {str(t): i for i, t in enumerate(ctx["title"])}
-    else:
-        title_order = {}
-    selected.sort(key=lambda x: (title_order.get(x[0], len(title_order)), x[1]))
-
-    # 6) Keep the original document order: title position in context, then sentence id.
+    # 6) optional: reorder by original document position (opt-in via respect_doc_order),
+    # otherwise keep insertion order (supporting + shortest fill (+ longest top-up)).
+    if respect_doc_order:
+        title_order = _title_order_from_context(ex)
+        selected.sort(key=lambda x: (title_order.get(x[0], len(title_order)), x[1]))
     context_text = "\n".join([x[2] for x in selected])
     context_ids = []
     for i, x in enumerate(selected):
@@ -4947,6 +5059,7 @@ def main():
                 trust_remote_code=model_args.trust_remote_code,
                 dtype=dtype,
                 output_loading_info=True,
+                ignore_mismatched_sizes=True,
             )
         loading_info = {}
         if isinstance(model_loaded, tuple) and len(model_loaded) == 2:
@@ -5176,11 +5289,26 @@ def main():
             lower = max(0, mix_block_size - local_bucket_size) if local_bucket_size > 0 else 0
             min_ctx_tokens = max(0, (lower + 1) - (len(prefix_ids) + len(suffix_ids) + len(ans_ids) + 1))
 
+            # Controlled training-time evidence placement: reorder this example's
+            # raw distractor documents so supporting facts land near a target
+            # fraction of the document list, then force respect_doc_order=True so
+            # the assembled prompt actually reflects that placement (instead of
+            # the default front-pinned behavior). Off (-1.0, default) reproduces
+            # the original front-pinned training distribution exactly.
+            _train_target_pct = float(getattr(config, "hotpot_train_center_target_pct", -1.0))
+            if _train_target_pct >= 0.0:
+                ex_for_context = _reorder_context_for_target_placement(ex, _train_target_pct)
+                respect_order = True
+            else:
+                ex_for_context = ex
+                respect_order = bool(getattr(config, "hotpot_respect_doc_order", False))
+
             ctx_text, ctx_ids, status = build_context_budgeted(
-                ex,
+                ex_for_context,
                 budget_context,
                 prefer_same_title=True,
                 min_tokens=min_ctx_tokens,
+                respect_doc_order=respect_order,
             )
             if ctx_text is None:
                 return make_discard(0)
@@ -5217,7 +5345,7 @@ def main():
 
         def _hotpot_cache_fingerprint_for_mix():
             key = {
-                "dataset": "hotpot_qa_mcq_lm_v2_docorder",
+                "dataset": "hotpot_qa_mcq_lm_v1",
                 "block_size": mix_block_size,
                 "q_use": q_use,
                 "bucket_size": local_bucket_size,
@@ -5225,6 +5353,8 @@ def main():
                 "question_position": getattr(config, "hotpot_question_position", None),
                 "hotpot_long_jsonl": getattr(data_args, "hotpot_long_jsonl", None),
                 "hotpot_long_lengths": getattr(data_args, "hotpot_long_lengths", None),
+                "respect_doc_order": bool(getattr(config, "hotpot_respect_doc_order", False)),
+                "train_center_target_pct": float(getattr(config, "hotpot_train_center_target_pct", -1.0)),
             }
             return hashlib.md5(json.dumps(key, sort_keys=True).encode("utf-8")).hexdigest()
 
@@ -5502,11 +5632,22 @@ def main():
             lower = max(0, block_size - bucket_size) if bucket_size > 0 else 0
             min_ctx_tokens = max(0, (lower + 1) - (len(prefix_ids) + len(suffix_ids) + len(ans_ids) + 1))
 
+            # See build_hotpot_qa_for_mix for rationale: controlled training-time
+            # evidence placement, off (-1.0) reproduces original front-pinned behavior.
+            _train_target_pct = float(getattr(config, "hotpot_train_center_target_pct", -1.0))
+            if _train_target_pct >= 0.0:
+                ex_for_context = _reorder_context_for_target_placement(ex, _train_target_pct)
+                respect_order = True
+            else:
+                ex_for_context = ex
+                respect_order = bool(getattr(config, "hotpot_respect_doc_order", False))
+
             ctx_text, ctx_ids, status = build_context_budgeted(
-                ex,
+                ex_for_context,
                 budget_context,
                 prefer_same_title=True,
                 min_tokens=min_ctx_tokens,
+                respect_doc_order=respect_order,
             )
             if ctx_text is None:
                 return make_discard(0)
@@ -5561,7 +5702,7 @@ def main():
         # os._exit(0)
         def _hotpot_cache_fingerprint():
             key = {
-                "dataset": "hotpot_qa_mcq_lm_v2_docorder",
+                "dataset": "hotpot_qa_mcq_lm_v1",
                 "block_size": block_size,
                 "q_use": q_use,
                 "bucket_size": bucket_size,
@@ -5569,6 +5710,8 @@ def main():
                 "question_position": getattr(config, "hotpot_question_position", None),
                 "hotpot_long_jsonl": getattr(data_args, "hotpot_long_jsonl", None),
                 "hotpot_long_lengths": getattr(data_args, "hotpot_long_lengths", None),
+                "respect_doc_order": bool(getattr(config, "hotpot_respect_doc_order", False)),
+                "train_center_target_pct": float(getattr(config, "hotpot_train_center_target_pct", -1.0)),
             }
             return hashlib.md5(json.dumps(key, sort_keys=True).encode("utf-8")).hexdigest()
         if training_args.do_train and not training_args.do_eval:
@@ -6676,14 +6819,15 @@ def main():
         #### hotpot_qa setting ########
         metric = evaluate.load("accuracy", cache_dir=model_args.cache_dir)
         IS_XSUM = (data_args.dataset_name == "xsum")
+        XSUM_ROUGE_ONLY = os.environ.get("XSUM_ROUGE_ONLY", "0") == "1"
         rouge_metric = evaluate.load("rouge") if (IS_XSUM or IS_MIX) else None
-        bertscore_metric = evaluate.load("bertscore") if IS_XSUM else None
+        bertscore_metric = evaluate.load("bertscore") if (IS_XSUM and not XSUM_ROUGE_ONLY) else None
 
         # extra reference-based metrics
-        bleu_metric = evaluate.load("bleu") if IS_XSUM else None
-        sacrebleu_metric = evaluate.load("sacrebleu") if IS_XSUM else None
-        meteor_metric = evaluate.load("meteor") if IS_XSUM else None
-        chrf_metric = evaluate.load("chrf") if IS_XSUM else None
+        bleu_metric = evaluate.load("bleu") if (IS_XSUM and not XSUM_ROUGE_ONLY) else None
+        sacrebleu_metric = evaluate.load("sacrebleu") if (IS_XSUM and not XSUM_ROUGE_ONLY) else None
+        meteor_metric = evaluate.load("meteor") if (IS_XSUM and not XSUM_ROUGE_ONLY) else None
+        chrf_metric = evaluate.load("chrf") if (IS_XSUM and not XSUM_ROUGE_ONLY) else None
         paired_setting_raw = str(getattr(training_args, "paired_eval_setting", "auto")).strip().lower()
         if paired_setting_raw not in {"auto", "baseline", "rel0"}:
             raise ValueError(f"paired_eval_setting must be one of: auto|baseline|rel0, got {paired_setting_raw}")
@@ -7705,32 +7849,33 @@ def main():
                     use_stemmer=True
                 )
 
-                bertscore = bertscore_metric.compute(
-                    predictions=pred_texts,
-                    references=ref_texts,
-                    lang="en"
-                )
-                bert_f1 = np.asarray(bertscore["f1"], dtype=np.float32)
+                if not XSUM_ROUGE_ONLY:
+                    bertscore = bertscore_metric.compute(
+                        predictions=pred_texts,
+                        references=ref_texts,
+                        lang="en"
+                    )
+                    bert_f1 = np.asarray(bertscore["f1"], dtype=np.float32)
 
-                bleu = bleu_metric.compute(
-                    predictions=pred_texts,
-                    references=[[r] for r in ref_texts],
-                )
+                    bleu = bleu_metric.compute(
+                        predictions=pred_texts,
+                        references=[[r] for r in ref_texts],
+                    )
 
-                sacrebleu = sacrebleu_metric.compute(
-                    predictions=pred_texts,
-                    references=[[r] for r in ref_texts],
-                )
+                    sacrebleu = sacrebleu_metric.compute(
+                        predictions=pred_texts,
+                        references=[[r] for r in ref_texts],
+                    )
 
-                meteor = meteor_metric.compute(
-                    predictions=pred_texts,
-                    references=ref_texts,
-                )
+                    meteor = meteor_metric.compute(
+                        predictions=pred_texts,
+                        references=ref_texts,
+                    )
 
-                chrf = chrf_metric.compute(
-                    predictions=pred_texts,
-                    references=ref_texts,
-                )
+                    chrf = chrf_metric.compute(
+                        predictions=pred_texts,
+                        references=ref_texts,
+                    )
 
                 # ---------------------------
                 # length / sanity metrics
@@ -7749,14 +7894,18 @@ def main():
                     "rouge1": float(rouge.get("rouge1", 0.0)),
                     "rouge2": float(rouge.get("rouge2", 0.0)),
                     "rougeL": float(rouge.get("rougeL", 0.0)),
-                    "bertscore": float(bert_f1.mean()),
-                    "bertscore_std": _safe_std(bert_f1.tolist()),
+                }
+                if not XSUM_ROUGE_ONLY:
+                    out.update({
+                        "bertscore": float(bert_f1.mean()),
+                        "bertscore_std": _safe_std(bert_f1.tolist()),
 
-                    "bleu": float(bleu.get("bleu", 0.0)),
-                    "sacrebleu": float(sacrebleu.get("score", 0.0)),
-                    "meteor": float(meteor.get("meteor", 0.0)),
-                    "chrf": float(chrf.get("score", 0.0)),
-
+                        "bleu": float(bleu.get("bleu", 0.0)),
+                        "sacrebleu": float(sacrebleu.get("score", 0.0)),
+                        "meteor": float(meteor.get("meteor", 0.0)),
+                        "chrf": float(chrf.get("score", 0.0)),
+                    })
+                out.update({
                     "gen_len": _safe_mean(gen_lens),
                     "ref_len": _safe_mean(ref_lens),
                     "compression_ratio": (
@@ -7765,14 +7914,14 @@ def main():
                     ),
                     "empty_pred_ratio": empty_pred_ratio,
                     "count": len(pred_texts),
-                }
+                })
 
                 # ---------------------------
                 # source-grounded metrics
                 # ---------------------------
                 _local_rank = int(os.environ.get("LOCAL_RANK", training_args.local_rank if hasattr(training_args, "local_rank") else -1))
                 _is_main = (_local_rank <= 0)
-                if len(source_texts) == len(pred_texts) and len(source_texts) > 0 and _is_main:
+                if len(source_texts) == len(pred_texts) and len(source_texts) > 0 and _is_main and not XSUM_ROUGE_ONLY:
                     # ---------------------------
                     # SummaC (recommended primary faithful metric)
                     # ---------------------------
@@ -7879,9 +8028,9 @@ def main():
                     "[XSUM_METRICS] "
                     f"count={out['count']} "
                     f"rouge1={out['rouge1']:.4f} rouge2={out['rouge2']:.4f} rougeL={out['rougeL']:.4f} "
-                    f"bertscore={out['bertscore']:.4f} "
-                    f"bleu={out['bleu']:.4f} sacrebleu={out['sacrebleu']:.4f} "
-                    f"meteor={out['meteor']:.4f} chrf={out['chrf']:.4f} "
+                    f"bertscore={out.get('bertscore', float('nan')):.4f} "
+                    f"bleu={out.get('bleu', float('nan')):.4f} sacrebleu={out.get('sacrebleu', float('nan')):.4f} "
+                    f"meteor={out.get('meteor', float('nan')):.4f} chrf={out.get('chrf', float('nan')):.4f} "
                     f"gen_len={out['gen_len']:.2f} ref_len={out['ref_len']:.2f} "
                     f"compression_ratio={out['compression_ratio']:.4f} "
                     f"empty_pred_ratio={out['empty_pred_ratio']:.4f} "
