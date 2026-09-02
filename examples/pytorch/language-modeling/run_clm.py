@@ -4443,6 +4443,7 @@ def main():
             "wavelet_router_sigmoid",
             "wavelet_ctx_feat",
             "rel_use_layer",
+            "hotpot_",
         ):
             overridden += force_override_hf_config(config, cfg, _prefix)
         # Also force a single explicit key if present
