@@ -5,7 +5,7 @@
 #SBATCH --gres=gpu:p6000:4
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --time=4:00:00
+#SBATCH --time=100:00:00
 set -euxo pipefail
 if [ -f /home/is/hongyu-s/miniconda3/etc/profile.d/conda.sh ]; then set +u; source /home/is/hongyu-s/miniconda3/etc/profile.d/conda.sh; conda activate latest_transformers; set -u; fi
 cd "/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling"
@@ -32,12 +32,18 @@ torchrun --nproc_per_node=4 --master_port="${MASTER_PORT}" ./run_clm.py \
   --validation_split_percentage 1 \
   --block_size 512 \
   --do_train \
-  --max_steps 50 \
+  --do_eval \
+  --max_steps 80000 \
   --skip_memory_metrics False \
-  --eval_strategy no \
-  --save_strategy no \
-  --logging_steps 1 \
+  --eval_strategy steps \
+  --eval_steps 5000 \
+  --save_steps 20000 \
+  --load_best_model_at_end True \
+  --metric_for_best_model eval_loss \
+  --greater_is_better False \
+  --logging_steps 500 \
   --per_device_train_batch_size 4 \
+  --per_device_eval_batch_size 4 \
   --gradient_accumulation_steps 4 \
   --learning_rate 1e-4 \
   --weight_decay 0.01 \
