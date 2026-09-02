@@ -1,6 +1,6 @@
 #!/bin/bash
-#SBATCH --job-name=smoketest_gpt2xl_p6000x4_bs4acc4
-#SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/smoketest_gpt2xl_owt_pa_4gpu/%j_smoketest.txt
+#SBATCH --job-name=pretrain_gpt2xl_owt_pa_p6000x4
+#SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/gpt2xl_owt_pa_p6000x4/%j_pretrain.txt
 #SBATCH --partition=gpu_long
 #SBATCH --gres=gpu:p6000:4
 #SBATCH --ntasks=1
@@ -14,7 +14,7 @@ export HF_HOME=/cl/work5/hongyu-s/huggingfac
 export HF_DATASETS_CACHE=/cl/work5/hongyu-s/huggingfac/datasets
 export WANDB_DISABLED=true WANDB_MODE=disabled
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-RUN_OUT="/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/smoketest_gpt2xl_owt_pa_4gpu"
+RUN_OUT="/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/gpt2xl_owt_pa_p6000x4"
 mkdir -p "${RUN_OUT}"
 MASTER_PORT=$((12000 + SLURM_JOB_ID % 10000))
 cat > "${RUN_OUT}/supply_model.cfg" <<'CFG'
@@ -89,4 +89,4 @@ torchrun --nproc_per_node=4 --master_port="${MASTER_PORT}" ./run_clm.py \
   --output_dir "${RUN_OUT}" \
   --logging_dir "${RUN_OUT}/log" \
   --cfg_path "${RUN_OUT}/supply_model.cfg"
-echo "=== smoketest gpt2-xl PA-only p6000x4 bs4acc4 (global_bs=64) done ==="
+echo "=== gpt2-xl PA-only pretrain p6000x4 bs4acc4 (global_bs=64) done ==="
