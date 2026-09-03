@@ -3,7 +3,7 @@
 #SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/nope_mix_finetune/s42/%j_train_nope_mix_s42.txt
 #SBATCH --partition=gpu_long
 #SBATCH --time=100:00:00
-#SBATCH --gres=gpu:6000:2
+#SBATCH --gres=gpu:3090:2
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 
