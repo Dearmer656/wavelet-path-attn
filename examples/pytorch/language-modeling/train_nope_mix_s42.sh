@@ -3,7 +3,7 @@
 #SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/nope_mix_finetune/s42/%j_train_nope_mix_s42.txt
 #SBATCH --partition=gpu_long
 #SBATCH --time=100:00:00
-#SBATCH --gres=gpu:a6000:4
+#SBATCH --gres=gpu:6000:2
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 
@@ -15,6 +15,8 @@
 # This REPLACES the previously-used runs/wikitext_pe_cmp/wavelet/finetune_eager_nope_seed42
 # checkpoint, whose PRETRAIN stage actually used wavelet PE (only stripped to no_pe at finetune
 # time) — not a fair "no positional encoding at all" baseline. See PAT-256 for the full writeup.
+# GPU: rerouted from a6000x4 to elm26's idle 6000x2 (no a6000 free); per_device_bs=16 unchanged,
+# gradient_accumulation_steps doubled 1->2 to keep global_bs=64 (16*2gpu*2accum=64).
 
 set -euxo pipefail
 
@@ -43,7 +45,7 @@ scale_type="none"
 hotpot_question_position="later"
 CFG
 
-python -m torch.distributed.run --nproc_per_node=4 --master_port="${MASTER_PORT}" ./run_clm.py \
+python -m torch.distributed.run --nproc_per_node=2 --master_port="${MASTER_PORT}" ./run_clm.py \
   --model_name_or_path "${PRETRAIN_CKPT}" \
   --tokenizer_name gpt2 \
   --dataset_name mix \
@@ -52,7 +54,7 @@ python -m torch.distributed.run --nproc_per_node=4 --master_port="${MASTER_PORT}
   --block_size 512 \
   --per_device_train_batch_size 16 \
   --per_device_eval_batch_size 16 \
-  --gradient_accumulation_steps 1 \
+  --gradient_accumulation_steps 2 \
   --num_train_epochs 10 \
   --learning_rate 1e-4 \
   --weight_decay 0.01 \
