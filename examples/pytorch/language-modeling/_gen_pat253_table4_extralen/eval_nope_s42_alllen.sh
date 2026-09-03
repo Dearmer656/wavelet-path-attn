@@ -38,6 +38,11 @@ for BSIZE in 512 2048 4096 8192 12288 16384; do
   mkdir -p "${OUTPUT}"
   echo "=== nope s42 L${BSIZE} ==="
   MASTER_PORT=$(( 13000 + SLURM_JOB_ID % 10000 + BSIZE % 100 ))
+  if [ "${BSIZE}" -gt 4096 ]; then
+    PRECISION_ARGS="--bf16 True"
+  else
+    PRECISION_ARGS=""
+  fi
   python -m torch.distributed.run --nproc_per_node=1 --master_port=${MASTER_PORT} ./run_clm.py \
     --model_type gpt2 --tokenizer_name gpt2 \
     --model_name_or_path "${CKPT}" \
@@ -47,6 +52,7 @@ for BSIZE in 512 2048 4096 8192 12288 16384; do
     --hotpot_long_lengths "${BSIZE}" \
     --do_eval --block_size "${BSIZE}" \
     --per_device_eval_batch_size 1 \
+    ${PRECISION_ARGS} \
     --output_dir "${OUTPUT}" --overwrite_output_dir \
     --logging_dir "${OUTPUT}/log" \
     --seed 42 --load_best_model_at_end False \

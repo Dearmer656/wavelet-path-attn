@@ -50,6 +50,7 @@ for i in "${!LENGTHS[@]}"; do
     --do_eval \
     --block_size "${L}" \
     --per_device_eval_batch_size 1 \
+    --bf16 True \
     --output_dir "${OUTPUT}" --overwrite_output_dir \
     --logging_dir "${OUTPUT}/log" \
     --seed 42 --load_best_model_at_end False
