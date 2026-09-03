@@ -2,7 +2,7 @@
 #SBATCH --job-name=ricker128_hp_extralen
 #SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/logs/%j_K1_rho128_ricker_s42_extralen.txt
 #SBATCH --partition=gpu_long
-#SBATCH --gres=gpu:6000:4
+#SBATCH --gres=gpu:a6000:2
 #SBATCH --time=48:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
@@ -34,7 +34,7 @@ for BSIZE in 8192 12288 16384; do
   mkdir -p "${OUTPUT}"
   echo "=== K1_rho128_ricker s42 L${BSIZE} ==="
   MASTER_PORT=$((12000 + SLURM_JOB_ID % 10000 + BSIZE % 100))
-  torchrun --nproc_per_node=4 --master_port=${MASTER_PORT} ./run_clm.py \
+  torchrun --nproc_per_node=2 --master_port=${MASTER_PORT} ./run_clm.py \
     --model_type gpt2 --tokenizer_name gpt2 \
     --model_name_or_path "${CKPT}" \
     --attn_implementation path_attn --bias_type wavelet \

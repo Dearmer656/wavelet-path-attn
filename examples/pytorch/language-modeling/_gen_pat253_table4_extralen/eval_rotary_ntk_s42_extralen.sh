@@ -2,7 +2,7 @@
 #SBATCH --job-name=rotary_ntk_extralen
 #SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/logs/%j_rotary_ntk_s42_extralen.txt
 #SBATCH --partition=gpu_long
-#SBATCH --gres=gpu:6000:4
+#SBATCH --gres=gpu:3090:4
 #SBATCH --time=48:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
