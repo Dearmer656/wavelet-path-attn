@@ -20,6 +20,7 @@ export PYTHONPATH=/project/nlp-work5/hongyu-s/transformers/src${PYTHONPATH:+:${P
 export HF_HOME=/cl/work5/hongyu-s/huggingfac
 export HF_DATASETS_CACHE=/cl/work5/hongyu-s/huggingfac/datasets
 export WANDB_DISABLED=true
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 BASE=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling
 CKPT="${BASE}/runs/alibi_mix_finetune/s42/checkpoint-15000"
