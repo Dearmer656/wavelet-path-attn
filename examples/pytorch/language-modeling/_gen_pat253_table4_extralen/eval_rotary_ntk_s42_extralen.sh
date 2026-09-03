@@ -2,7 +2,7 @@
 #SBATCH --job-name=rotary_ntk_extralen
 #SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/logs/%j_rotary_ntk_s42_extralen.txt
 #SBATCH --partition=gpu_long
-#SBATCH --gres=gpu:3090:4
+#SBATCH --gres=gpu:3090:2
 #SBATCH --time=48:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
@@ -38,7 +38,7 @@ for i in "${!LENGTHS[@]}"; do
   mkdir -p "${OUTPUT}"
   echo "=== Rotary NTK (fixed) s42 L${L} theta=${THETA} ==="
   MASTER_PORT=$(( 17000 + SLURM_JOB_ID % 1000 + L % 100 ))
-  python -m torch.distributed.run --nproc_per_node=4 --master_port=${MASTER_PORT} ./run_clm.py \
+  python -m torch.distributed.run --nproc_per_node=2 --master_port=${MASTER_PORT} ./run_clm.py \
     --model_type gpt2 --tokenizer_name gpt2 \
     --model_name_or_path "${CKPT}" \
     --attn_implementation eager \
