@@ -25,7 +25,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 BASE=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling
 CKPT="${BASE}/runs/PA_baseline_multi_seeds/token_even_mix_PA_s42/checkpoint-15000"
-CFG_PATH="${BASE}/runs/PA_baseline_multi_seeds/token_even_mix_PA_s42/supply_model.cfg"
+CFG_PATH="${BASE}/_gen_pat253_table4_extralen/PA_only_s42_extralen_override.cfg"
 cd "${BASE}"
 
 for BSIZE in 8192 12288 16384; do
