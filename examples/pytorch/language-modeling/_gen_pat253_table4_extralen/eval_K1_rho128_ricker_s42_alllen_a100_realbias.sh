@@ -1,16 +1,17 @@
 #!/bin/bash
-#SBATCH --job-name=ricker128_realbias_p6000
-#SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/logs/%j_K1_rho128_ricker_s42_alllen_p6000_realbias.txt
+#SBATCH --job-name=ricker128_realbias_a100
+#SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/logs/%j_K1_rho128_ricker_s42_alllen_a100_realbias.txt
 #SBATCH --partition=gpu_long
-#SBATCH --gres=gpu:p6000:1
+#SBATCH --gres=gpu:a100-80:1
 #SBATCH --time=48:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 
 # Table 4 (GPT-2 small) QWAB/Ricker rho=128, ALL 6 lengths, REAL bias (pytorch impl, not triton)
 # L8192/12288/16384 previously only had the triton fallback (bias skipped, PA-only-equivalent numbers).
-# p6000 (96GB) is the only pool where path_attn+wavelet bias fit at these lengths (confirmed:
-# pytorch OOMs even in bf16 on a single 47.4GB a6000/6000 at L8192, regardless of bias).
+# Needs a big-memory card (p6000 96GB or a100-80 80GB) — confirmed pytorch OOMs even in bf16
+# on a single 47.4GB a6000/6000 at L8192, regardless of bias. Rerouted here from p6000 (which
+# was fully occupied by other users) to elm44's a100-80 pool.
 # L512/2048/4096 rerun here too for a fully self-consistent single-script record, even though the
 # existing Table 4 numbers for those lengths (from a different job) are already correct.
 # Same checkpoint as the rest of this row: runs/pat244_dual_temp/K1_L512_me14_rho128_ricker_s42/checkpoint-15000
@@ -38,9 +39,9 @@ for BSIZE in 512 2048 4096 8192 12288 16384; do
   else
     JSONL="${BASE}/hotpot_long/data/hotpot_long_dev_uniform_${BSIZE}only.jsonl"
   fi
-  OUTPUT="${BASE}/hotpot_long/results_uniform/K1_L512_me14_rho128_ricker_s42_ckpt15000_p6000_realbias/L${BSIZE}"
+  OUTPUT="${BASE}/hotpot_long/results_uniform/K1_L512_me14_rho128_ricker_s42_ckpt15000_a100_realbias/L${BSIZE}"
   mkdir -p "${OUTPUT}"
-  echo "=== K1_rho128_ricker s42 L${BSIZE} (p6000, real bias) ==="
+  echo "=== K1_rho128_ricker s42 L${BSIZE} (a100-80, real bias) ==="
   MASTER_PORT=$((12000 + SLURM_JOB_ID % 10000 + BSIZE % 100))
   torchrun --nproc_per_node=1 --master_port=${MASTER_PORT} ./run_clm.py \
     --model_type gpt2 --tokenizer_name gpt2 \
@@ -65,4 +66,4 @@ for BSIZE in 512 2048 4096 8192 12288 16384; do
   python3 -c "import json; d=json.load(open('${OUTPUT}/eval_results.json')); print(f'K1_rho128_ricker s42 L${BSIZE} (p6000 real bias): F1={d[\"eval_f1\"]:.4f}')"
 done
 
-echo "=== Done: K1 rho=128 Ricker s42 all 6 lengths (p6000, real bias) ==="
+echo "=== Done: K1 rho=128 Ricker s42 all 6 lengths (a100-80, real bias) ==="
