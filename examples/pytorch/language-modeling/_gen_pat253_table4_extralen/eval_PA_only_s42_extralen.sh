@@ -45,6 +45,7 @@ for BSIZE in 8192 12288 16384; do
     --do_eval --block_size ${BSIZE} \
     --per_device_eval_batch_size 1 \
     --path_attn_impl pytorch \
+    --bf16 True \
     --report_to none \
     --output_dir "${OUTPUT}" --overwrite_output_dir \
     --logging_dir "${OUTPUT}/log" \
