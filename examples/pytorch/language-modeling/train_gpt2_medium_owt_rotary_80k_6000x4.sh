@@ -2,7 +2,7 @@
 #SBATCH --job-name=rot_med_80k
 #SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/log_file/train/%j_rot_med_80k.txt
 #SBATCH --partition=gpu_long
-#SBATCH --gres=gpu:p6000:4
+#SBATCH --gres=gpu:6000:4
 #SBATCH --time=100:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
@@ -12,7 +12,10 @@
 # (pure RoPE baseline, parallel to small model's rotary_mix_finetune)
 #   max_steps=80000, warmup_ratio=0.05, eval_steps=5000, save_steps=10000
 #   load_best=True, no early_stopping, global_bs=64
-# 4×p6000 (96GB): per_device_bs=16, grad_accum=1 -> global_bs=64
+# 4×6000 (48GB): per_device_bs=16, grad_accum=1 -> global_bs=64
+# (originally targeted p6000x4 after gpt2xl pretrain freed it, but those GPUs were
+#  immediately backfilled by other users' jobs before this could claim them; rerouted
+#  to elm71's fully-idle 6000x4 pool instead of waiting)
 
 set -euxo pipefail
 
