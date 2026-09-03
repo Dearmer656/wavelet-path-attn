@@ -12,10 +12,16 @@
 # (pure RoPE baseline, parallel to small model's rotary_mix_finetune)
 #   max_steps=80000, warmup_ratio=0.05, eval_steps=5000, save_steps=10000
 #   load_best=True, no early_stopping, global_bs=64
-# 4×6000 (48GB): per_device_bs=16, grad_accum=1 -> global_bs=64
+# 4×6000 (48GB): per_device_bs=4, grad_accum=4 -> global_bs=64
 # (originally targeted p6000x4 after gpt2xl pretrain freed it, but those GPUs were
 #  immediately backfilled by other users' jobs before this could claim them; rerouted
 #  to elm71's fully-idle 6000x4 pool instead of waiting)
+# NOTE: first attempt used per_device_bs=16/accum=1 (matching the never-actually-run
+# Rotary+QWAB a6000x4 script) and OOM'd immediately at step 0 (needed ~1.5GB more than
+# 47.37GB). Eager attention retains the full O(T^2) attention matrix for backward
+# (unlike eval's no_grad forward-only pass), so it's far heavier than path_attn's
+# reference config (job 416508, per_device_bs=16 on path_attn, which doesn't have this
+# O(T^2) backward cost). Cut batch 4x + added bf16 for headroom.
 
 set -euxo pipefail
 
@@ -28,6 +34,7 @@ export HF_HOME=/cl/work5/hongyu-s/huggingfac
 export HF_DATASETS_CACHE=/cl/work5/hongyu-s/huggingfac/datasets
 export WANDB_DISABLED=true
 export WANDB_MODE=disabled
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 WORKDIR=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling
 cd "${WORKDIR}"
@@ -58,12 +65,13 @@ echo "=== Plain Rotary medium OWT pretrain: 4×p6000 ==="
   --load_best_model_at_end True \
   --metric_for_best_model eval_loss \
   --greater_is_better False \
-  --per_device_train_batch_size 16 \
-  --per_device_eval_batch_size 16 \
-  --gradient_accumulation_steps 1 \
+  --per_device_train_batch_size 4 \
+  --per_device_eval_batch_size 4 \
+  --gradient_accumulation_steps 4 \
   --learning_rate 1e-4 \
   --weight_decay 0.01 \
   --warmup_ratio 0.05 \
+  --bf16 True \
   --attn_implementation eager \
   --pe_method rotary \
   --wavelet_router False \
