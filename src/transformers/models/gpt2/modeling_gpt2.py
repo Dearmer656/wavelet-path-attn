@@ -44,6 +44,7 @@ from ...utils import (
     ModelOutput,
     add_start_docstrings,
     auto_docstring,
+    is_flash_attn_2_available,
     logging,
 )
 from ...utils.deprecation import deprecate_kwarg
@@ -61,6 +62,10 @@ except Exception as _e:
     _PaTHAttention = None
     _PaTHAttentionWfreq = None
     _path_ut_base_raw = None
+try:
+    from flash_attn import flash_attn_func as _flash_attn_func
+except Exception:
+    _flash_attn_func = None
 try:
     from fla.layers.freq_analysis_utils import *
 except Exception:
@@ -480,6 +485,87 @@ def eager_attention_forward(module, query, key, value, attention_mask, head_mask
     attn_output = attn_output.transpose(1, 2)
 
     return attn_output, attn_weights
+
+
+def flash_attention_2_alibi_forward(module, query, key, value, attention_mask, head_mask=None, **kwargs):
+    if head_mask is not None:
+        raise ValueError("GPT-2 ALiBi with flash_attention_2 does not support head_mask.")
+    if _flash_attn_func is None:
+        raise ImportError(
+            "flash_attn is required for `pe_method='alibi'` with `attn_implementation='flash_attention_2'`."
+        )
+    if not torch.cuda.is_available():
+        raise RuntimeError("GPT-2 ALiBi with flash_attention_2 requires a CUDA GPU.")
+    if not is_flash_attn_2_available():
+        raise RuntimeError(
+            "flash_attn_2 is not available in this environment. Install flash-attn or use eager attention."
+        )
+
+    device_capability = torch.cuda.get_device_capability(query.device)
+    if device_capability[0] < 8:
+        raise RuntimeError(
+            f"GPT-2 ALiBi with flash_attention_2 requires an Ampere-or-newer GPU (compute capability >= 8.0); "
+            f"found capability {device_capability[0]}.{device_capability[1]}."
+        )
+
+    if query.ndim != 4 or key.ndim != 4 or value.ndim != 4:
+        raise ValueError(
+            "flash_attention_2 ALiBi expects query/key/value to have shape [batch, heads, seqlen, headdim]."
+        )
+
+    num_heads = query.size(1)
+    q_len = query.size(-2)
+    k_len = key.size(-2)
+    if query.size(0) != key.size(0) or key.size(0) != value.size(0):
+        raise ValueError("flash_attention_2 ALiBi requires matching batch sizes for q, k, and v.")
+    if key.size(1) != num_heads or value.size(1) != num_heads:
+        raise ValueError("flash_attention_2 ALiBi requires matching head counts for q, k, and v.")
+
+    if attention_mask is not None:
+        mask = attention_mask[..., :q_len, :k_len]
+        causal = torch.triu(torch.ones((q_len, k_len), device=mask.device, dtype=torch.bool), diagonal=1)
+        causal = causal.view(1, 1, q_len, k_len)
+        lower = mask.masked_select(~causal)
+        upper = mask.masked_select(causal)
+        if lower.numel() > 0 and not torch.all(lower == 0):
+            raise ValueError(
+                "GPT-2 ALiBi with flash_attention_2 only supports a pure causal mask; "
+                "this batch includes extra masking such as padding."
+            )
+        if upper.numel() > 0 and not torch.all(upper < 0):
+            raise ValueError(
+                "GPT-2 ALiBi with flash_attention_2 expected masked causal positions to be negative."
+            )
+
+    # flash_attn uses [B, T, H, D]. Cast to bf16/fp16 if needed because the kernel does not accept fp32.
+    q = query.transpose(1, 2).contiguous()
+    k = key.transpose(1, 2).contiguous()
+    v = value.transpose(1, 2).contiguous()
+    if q.dtype not in (torch.float16, torch.bfloat16):
+        q = q.to(dtype=torch.bfloat16)
+        k = k.to(dtype=torch.bfloat16)
+        v = v.to(dtype=torch.bfloat16)
+
+    assert q.shape == (query.size(0), q_len, num_heads, query.size(-1))
+    assert k.shape == (key.size(0), k_len, num_heads, key.size(-1))
+    assert v.shape == (value.size(0), k_len, num_heads, value.size(-1))
+
+    alibi_slopes = _get_alibi_slopes(num_heads, query.device).to(dtype=torch.float32)
+    attn_output = _flash_attn_func(
+        q,
+        k,
+        v,
+        dropout_p=0.0,
+        softmax_scale=None,
+        causal=True,
+        alibi_slopes=alibi_slopes,
+    )
+    assert attn_output.shape == (query.size(0), q_len, num_heads, query.size(-1))
+    # flash_attn_func already returns [B, T, H, D] -- this is the exact layout the caller expects
+    # (matches eager_attention_forward's final `attn_output.transpose(1, 2)` -> [B, T, H, D] before
+    # its own return). Do NOT transpose again here -- that would silently swap the head and sequence
+    # axes and feed a wrongly-shaped tensor into the `reshape(*shape[:-2], -1)` + c_proj step downstream.
+    return attn_output.contiguous(), None
 import pdb
 class GPT2PaTHAttention(nn.Module):
     """
@@ -898,11 +984,14 @@ class GPT2Attention(nn.Module):
 
         using_eager = self.config._attn_implementation == "eager"
         attention_interface: Callable = eager_attention_forward
-        # wavelet/alibi PE require eager (custom bias injected inside eager_attention_forward)
+        # wavelet/alibi PE require eager by default (custom bias injected inside eager_attention_forward)
         if self.config.pe_method == 'wavelet' and getattr(self.config, 'relative_type', None) == '4':
             using_eager = True
         elif self.config.pe_method == 'alibi':
-            using_eager = True
+            if self.config._attn_implementation == "flash_attention_2":
+                attention_interface = flash_attention_2_alibi_forward
+            else:
+                using_eager = True
         elif self.config._attn_implementation != "eager" and self.config.pe_method != 'rotary':
             attention_interface = ALL_ATTENTION_FUNCTIONS[self.config._attn_implementation]
         if self.config.pe_method == 'rotary':
