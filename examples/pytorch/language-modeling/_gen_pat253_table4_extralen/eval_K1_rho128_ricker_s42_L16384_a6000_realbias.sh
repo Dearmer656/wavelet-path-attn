@@ -2,7 +2,7 @@
 #SBATCH --job-name=ricker128_realbias_L16384
 #SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/logs/%j_K1_rho128_ricker_s42_L16384_a6000_realbias.txt
 #SBATCH --partition=gpu_long
-#SBATCH --gres=gpu:a6000:1
+#SBATCH --gres=gpu:a100-80:1
 #SBATCH --time=48:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
