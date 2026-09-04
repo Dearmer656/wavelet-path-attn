@@ -40,6 +40,7 @@ for BSIZE in 1024 2048; do
     --dataset_name openwebtext \
     --validation_split_percentage 1 \
     --max_eval_samples 1000 \
+    --preprocessing_num_workers 8 \
     --pe_method rotary --attn_implementation eager \
     --block_size "${BSIZE}" \
     --do_eval \
