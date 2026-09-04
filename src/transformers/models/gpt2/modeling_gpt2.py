@@ -119,155 +119,244 @@ def _get_alibi_slopes(n_heads: int, device) -> torch.Tensor:
         slopes += extra[: n_heads - closest_pow2]
     return torch.tensor(slopes, device=device, dtype=torch.float32)
 
+SCALE_MULTIPLIER_DICT = {
+    "wavelet": 1.0,
+    "morlet": 3.0249,
+    "gaussian": 0.5316,
+    "linear": 0.7228,
+    "sine": 1.0,
+}
+
+
 class QWABBias(nn.Module):
     """Query-conditioned Wavelet Attention Bias for standard (non-path) attention.
 
-    Matches _build_ctxscale_shift_logit_bias_v0 with wavelet_ctx_feat_mode=hidden_ln,
-    except the routing feature is hidden_states (no q_corr from path attention).
-    All other details (shift formula, basis normalization, p99 clamp, gate init,
-    g_bias_max clamp) are identical to the FLA path_attn defaults.
+    2026-08-13 rewrite: ported to match the CURRENT `fla/layers/path_attn.py`
+    (`PaTHAttention._build_ctxscale_shift_logit_bias_v0`) implementation, since
+    the original May-2026 version had drifted (dead-gradient shift via
+    torch.round(), pre-p99-clamp-removal basis normalization, fixed K=8
+    Ricker-only scale grid, single router mode regardless of K). The only
+    deliberate deviation from path_attn.py is the router's input feature:
+    plain hidden_states (no PaTH q_corr/delta), per PAT-165's scope (this
+    module must not depend on PaTH attention state).
+
+    Ported behaviors:
+    - shift: symmetric differentiable formula (2*rho-1)*(T-1), no torch.round()
+      (the previous formula had exactly zero gradient into shift_ln/shift_proj,
+      see project memory "shift round() dead gradient").
+    - router mode is K-dependent: K=1 uses "with_null" (single scale, null vs
+      non-null gate only); K>1 uses "with_null_independent_scales" (scales
+      compete independently, not via softmax) -- matches the PAT-244 finding
+      that mixing these up is wrong.
+    - router-logit rms_joint normalization (PAT-234: this recovers most of the
+      benefit of the old joint-RMS router in a principled way).
+    - basis: per-scale RMS normalization (no p99 clamp -- p99 was removed from
+      path_attn.py mainline; keeping it here would reintroduce the K1
+      reproducibility regression documented in project memory).
+    - multiscale_norm is K-dependent exactly like _resolve_multiscale_norm:
+      at K=1 (with_null) requesting "rms" is a no-op (falls back to the
+      per-scale RMS above); at K>1 (with_null_independent_scales) "rms" means
+      RMS over the POST-sum bias, multiplied by the null gate afterward.
+    - no learnable per-layer gate: path_attn.py removed g_layer entirely on
+      2026-08-01 (forced to 1.0 for every config), so this class never had one
+      re-added; only the fixed g_bias_max clamp remains.
     """
 
-    _G_MAX = 0.5
     _G_BIAS_MAX = 4.0
 
     def __init__(self, config):
         super().__init__()
         embed_dim = config.hidden_size
-        K = int(getattr(config, "router_band_num", 8))
         eps = float(getattr(config, "layer_norm_epsilon", 1e-5))
 
-        # Router input: full hidden_states [B, T, embed_dim] directly (no head mean)
-        self.router = nn.Linear(embed_dim, K + 1, bias=True)  # K scales + 1 null
+        self.bias_type = str(getattr(config, "bias_type", "wavelet")).strip().lower()
+        if self.bias_type not in SCALE_MULTIPLIER_DICT:
+            self.bias_type = "wavelet"
+        self.morlet_freq = float(getattr(config, "wavelet_morlet_freq", 5.0))
 
-        # Shift: full hidden_states → LN → Linear(E, 1) → sigmoid → token shift β
-        self.shift_ln = nn.LayerNorm(embed_dim, eps=eps)
-        self.shift_proj = nn.Linear(embed_dim, 1, bias=True)
-
-        # Learnable layer gate; init matches FLA default (wavelet_logit_bias_a_init=-5.0)
-        self.logit_bias_a = nn.Parameter(torch.tensor(-5.0))
-        # Gradient hook: NaN/Inf zeroing + clamp to [-1, 1] (matches FLA wavelet_gate_grad_clip=1.0)
-        self._gate_grad_clip = 1.0
-        self.logit_bias_a.register_hook(self._gate_grad_hook)
-        # Forward clamp for numeric safety (matches FLA wavelet_ctxscale_lock_clamp_abs=8.0)
-        self._gate_clamp_abs = 8.0
-
-        # Ricker wavelet scales: 2^(scale_range[0] + step*i) for i=0..K-1
-        scale_range = list(getattr(config, "scale_range", [0, 16]))
-        step = (scale_range[1] - scale_range[0]) // K
-        scales = torch.tensor(
-            [2.0 ** (scale_range[0] + step * i) for i in range(K)], dtype=torch.float32
-        )
-        self.register_buffer("scales", scales)
-
+        K = int(getattr(config, "wavelet_ctxscale_k", getattr(config, "router_band_num", 1)))
         self._K = K
         self._eps = 1e-6
 
-    def _gate_grad_hook(self, grad: torch.Tensor) -> torch.Tensor:
-        """NaN/Inf zeroing + gradient clip on logit_bias_a (mirrors FLA _capture_wavelet_gate_grad)."""
-        g = grad.detach().to(dtype=torch.float32)
-        g = torch.nan_to_num(g, nan=0.0, posinf=0.0, neginf=0.0)
-        g = g.clamp(-self._gate_grad_clip, self._gate_grad_clip)
-        return g.to(dtype=grad.dtype)
+        # Router input: full hidden_states [B, T, embed_dim] directly (no head mean,
+        # no PaTH-derived q_corr/delta -- PAT-165 scope).
+        self.router = nn.Linear(embed_dim, K + 1, bias=True)  # K scales + 1 null
+
+        # Shift: full hidden_states -> LN -> Linear(E, 1 or K) -> sigmoid -> rho.
+        self.shift_per_scale = bool(getattr(config, "wavelet_ctxscale_shift_per_scale", False))
+        self.shift_ln = nn.LayerNorm(embed_dim, eps=eps)
+        self.shift_proj = nn.Linear(embed_dim, K if self.shift_per_scale else 1, bias=True)
+        self.scale_dependent_shift = bool(getattr(config, "wavelet_ctxscale_scale_dependent_shift", True))
+        self.shift_unit_max = float(getattr(config, "wavelet_ctxscale_shift_unit_max", 1.0))
+
+        # Router mode: K-dependent default, override-able via config.
+        default_mode = "with_null" if K == 1 else "with_null_independent_scales"
+        self.router_sigmoid_mode = str(
+            getattr(config, "wavelet_router_sigmoid_mode", default_mode)
+        ).strip().lower()
+        if self.router_sigmoid_mode not in ("with_null", "with_null_independent_scales"):
+            self.router_sigmoid_mode = default_mode
+        self.router_norm_mode = str(getattr(config, "wavelet_router_norm_mode", "rms_joint")).strip().lower()
+        self.router_rms_eps = float(getattr(config, "wavelet_ctxscale_router_rms_eps", 1e-6))
+
+        # multiscale_norm: K-dependent like _resolve_multiscale_norm in path_attn.py.
+        _requested_norm = str(getattr(config, "multiscale_norm", "rms")).strip().lower()
+        self._multiscale_rms_after_sum = (
+            _requested_norm == "rms" and self.router_sigmoid_mode == "with_null_independent_scales"
+        )
+
+        self.chunk_q = int(getattr(config, "wavelet_ctxscale_chunk_q", 256))
+
+        # Scale grid: same SCALE_MULTIPLIER_DICT / scale_max_exp convention as
+        # path_attn.py, so a given "rho" label means the same physical scale
+        # (e.g. rho=256 from the K1 L512 sweep can be reused directly here).
+        _max_exp = getattr(config, "wavelet_ctxscale_scale_max_exp", 16.0)
+        if isinstance(_max_exp, (list, tuple)):
+            if len(_max_exp) != K:
+                raise ValueError(
+                    f"wavelet_ctxscale_scale_max_exp must have {K} elements when "
+                    f"wavelet_ctxscale_k={K}, not {len(_max_exp)}: {_max_exp}"
+                )
+            _scale_exps = [float(x) / 2.0 for x in _max_exp]
+        else:
+            if K != 1:
+                raise ValueError(
+                    f"wavelet_ctxscale_scale_max_exp must be a list of length {K} "
+                    f"when wavelet_ctxscale_k={K}, not a single value: {_max_exp}"
+                )
+            _scale_exps = [float(_max_exp) / 2.0]
+        scales = torch.tensor(
+            [2.0 ** e * SCALE_MULTIPLIER_DICT[self.bias_type] for e in _scale_exps],
+            dtype=torch.float32,
+        )
+        self.register_buffer("scales", scales)
 
     @staticmethod
-    def _clamp_p99(x: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
-        """Per-chunk p99 absolute-value clamp, matching FLA _maybe_clamp_p99 defaults."""
-        abs_flat = x.detach().abs().reshape(-1)
-        if abs_flat.numel() == 0:
-            return x
-        n = abs_flat.numel()
-        if n > 4096:
-            idx = torch.linspace(0, n - 1, steps=4096, device=abs_flat.device).long()
-            abs_eval = abs_flat.index_select(0, idx)
-        else:
-            abs_eval = abs_flat
-        clamp_v = torch.quantile(abs_eval, 0.99).clamp_min(eps)
-        return x.clamp(min=-clamp_v, max=clamp_v)
+    def _rms_norm_last_dim(x: torch.Tensor, eps: float) -> torch.Tensor:
+        xf = x.to(dtype=torch.float32)
+        denom = torch.sqrt(xf.pow(2).mean(dim=-1, keepdim=True).clamp_min(0.0) + eps)
+        return xf / denom
+
+    def _basis(self, u: torch.Tensor) -> torch.Tensor:
+        if self.bias_type == "wavelet":
+            return (1.0 - u.pow(2)) * torch.exp(-0.5 * u.pow(2))
+        elif self.bias_type == "morlet":
+            return torch.exp(-0.5 * u.pow(2)) * torch.cos(self.morlet_freq * u)
+        elif self.bias_type == "gaussian":
+            return torch.exp(-0.5 * u.pow(2))
+        elif self.bias_type == "sine":
+            return torch.sin(math.pi * u)
+        elif self.bias_type == "linear":
+            return (1.0 - u.abs() / math.sqrt(3.0)).clamp_min(0.0)
+        raise ValueError(f"Unsupported bias_type: {self.bias_type}")
+
+    def _route(self, hs: torch.Tensor, eps: float):
+        """hs: [B, T, embed_dim] (already detached/float). Returns pi_scale_for_sum,
+        nonnull_gate (or None), g_null (branch_amp source)."""
+        rlogits = self.router(hs)  # [B, T, K+1]
+        if self.router_norm_mode == "rms_joint":
+            rlogits = self._rms_norm_last_dim(rlogits, eps=self.router_rms_eps)
+
+        g0_gate = torch.sigmoid(rlogits[..., 0:1])  # [B, T, 1] -- null vs non-null
+        s_logits = rlogits[..., 1:]
+
+        if self.router_sigmoid_mode == "with_null":
+            # K=1: scales "compete" inside non-null mass, but with K=1 this is trivial
+            # (w == 1 always); kept for K-dependent-mode parity with path_attn.py.
+            g = torch.sigmoid(s_logits)  # [B, T, K]
+            w = g / g.sum(dim=-1, keepdim=True).clamp_min(eps)
+            pi_scale_for_sum = g0_gate * w
+            nonnull_gate = None  # not needed: gate already folded into pi_scale_for_sum
+        else:  # with_null_independent_scales
+            g = torch.sigmoid(s_logits)  # [B, T, K], scales activate independently
+            if self._multiscale_rms_after_sum:
+                # Defer the null gate: sum with raw g first, RMS the sum, THEN multiply
+                # by g0_gate (matches path_attn.py's multiscale_rms_after_sum branch).
+                pi_scale_for_sum = g
+                nonnull_gate = g0_gate
+            else:
+                pi_scale_for_sum = g0_gate * g
+                nonnull_gate = None
+
+        return pi_scale_for_sum, nonnull_gate, g0_gate
 
     def _bias_chunk(
         self,
         q0: int,
         q1: int,
-        pi_scale: torch.Tensor,
-        beta: torch.Tensor,
+        pi_scale_for_sum: torch.Tensor,
+        nonnull_gate: Optional[torch.Tensor],
+        beta_m: torch.Tensor,
         diff: torch.Tensor,
         eps: float,
     ) -> torch.Tensor:
-        """Compute QWAB bias for query rows [q0, q1)."""
         T = diff.shape[0]
-        chunk_bias = pi_scale.new_zeros(pi_scale.shape[0], q1 - q0, T)
-        for s_idx in range(self._K):
-            s = float(self.scales[s_idx].item())
-            # FLA default (use_scale_coupled_shift=False): center fixed at absolute token β
-            u = (diff.view(1, 1, T) - beta[:, q0:q1].unsqueeze(-1)) / s  # [B, q_len, T]
-            basis = (1.0 - u.pow(2)) * torch.exp(-0.5 * u.pow(2))
-            basis = basis / (basis.pow(2).mean(-1, keepdim=True) + eps).sqrt()
-            basis = self._clamp_p99(basis, eps=eps)
-            chunk_bias = chunk_bias + pi_scale[:, q0:q1, s_idx].unsqueeze(-1) * basis
+        B = pi_scale_for_sum.shape[0]
+        chunk_bias = pi_scale_for_sum.new_zeros(B, q1 - q0, T)
+        for i in range(self._K):
+            s_i = float(self.scales[i].item())
+            beta_m_i = beta_m[:, q0:q1, i] if self.shift_per_scale else beta_m[:, q0:q1]
+            beta_i = beta_m_i * s_i if self.scale_dependent_shift else beta_m_i
+            u_i = (diff.view(1, 1, T) - beta_i.unsqueeze(-1)) / s_i  # [B, q_len, T]
+            basis = self._basis(u_i)
+            if not self._multiscale_rms_after_sum:
+                basis = self._rms_norm_last_dim(basis, eps=eps).to(dtype=basis.dtype)
+            chunk_bias = chunk_bias + pi_scale_for_sum[:, q0:q1, i].unsqueeze(-1) * basis
+
+        if self._multiscale_rms_after_sum:
+            chunk_bias = self._rms_norm_last_dim(chunk_bias, eps=eps)
+            if nonnull_gate is not None:
+                chunk_bias = chunk_bias * nonnull_gate[:, q0:q1, :].to(dtype=chunk_bias.dtype)
         return chunk_bias
 
-    def forward(self, hidden_states: torch.Tensor, chunk_size: int = 128):
+    def forward(self, hidden_states: torch.Tensor, chunk_size: Optional[int] = None):
         """
         Args:
             hidden_states: [B, T, embed_dim]  (pre-attention LN output)
             chunk_size: query chunk size for memory-efficient long-context eval
+                        (defaults to self.chunk_q, i.e. wavelet_ctxscale_chunk_q)
         Returns:
             bias: [B, 1, T, T]  additive bias broadcast to all heads
-            branch_amp: scalar — mean g_null (monitoring: ~0=QWAB off/collapsed, ~0.5+=QWAB active)
-                        NOT a collapse penalty; do NOT add to loss with positive geom_p weight.
-                        To use as collapse penalty, flip: (1 - branch_amp).
+            branch_amp: scalar -- mean g_null (monitoring: ~0=QWAB off/collapsed,
+                        ~1=QWAB fully active). NOT a collapse penalty; do not add
+                        to loss with positive weight without flipping polarity.
         """
         B, T, _ = hidden_states.shape
-        K, eps = self._K, self._eps
-        # detach: routing must not backprop through hidden_states
+        eps = self._eps
+        chunk_size = int(chunk_size or self.chunk_q)
+        # detach: routing must not backprop through hidden_states (matches FLA's
+        # wavelet_ctx_feat_detach_delta=true default used throughout this project).
         hs = hidden_states.detach().float()
 
-        # ---- routing: hidden_states [B, T, embed_dim] → per-token scale weights ----
-        rlogits = self.router(hs)                         # [B, T, K+1]
-        rlogits = rlogits / (rlogits.pow(2).mean(-1, keepdim=True) + eps).sqrt()
-        g_scales = torch.sigmoid(rlogits[..., 1:])            # [B, T, K]
-        g_null   = torch.sigmoid(rlogits[..., 0:1])           # [B, T, 1]
-        pi_scale = g_null * (g_scales / g_scales.sum(-1, keepdim=True).clamp_min(eps))  # [B, T, K]
+        pi_scale_for_sum, nonnull_gate, g0_gate = self._route(hs, eps)
 
-        # ---- shift ----
-        rho  = torch.sigmoid(self.shift_proj(self.shift_ln(hs)).squeeze(-1))  # [B, T]
-        # rho in (0,1) is a learned fractional position; scale by current T so wavelet
-        # centers spread proportionally across the full eval length.
-        # Bug fix: the previous min(T, _train_T) clamp capped all centers at 511 for
-        # T>512, systematically biasing long-range attention toward position 511 and
-        # causing catastrophic PPL collapse at L2048/L4096 (PPL 80/907 vs baseline 4.3/4.4).
-        _max_beta = float(T - 1)
-        beta = torch.round(rho * _max_beta).clamp_(0.0, _max_beta)            # [B, T]
+        # ---- shift: symmetric, differentiable, no torch.round() ----
+        rho_raw = self.shift_proj(self.shift_ln(hs))  # [B,T,1] or [B,T,K]
+        rho = torch.sigmoid(rho_raw if self.shift_per_scale else rho_raw.squeeze(-1))
+        beta_upper = float(max(1, T - 1))
+        if self.scale_dependent_shift:
+            beta_m = (2.0 * rho - 1.0) * self.shift_unit_max  # shift in scale units, coupled with s_i later
+        else:
+            beta_m = (2.0 * rho - 1.0) * beta_upper  # absolute token-index shift
 
-        # ---- layer gate (with forward clamp STE + NaN guard, matching FLA) ----
-        a_raw = self.logit_bias_a.float()
-        a_clamped = a_raw.clamp(-self._gate_clamp_abs, self._gate_clamp_abs)
-        a_used = a_raw + (a_clamped - a_raw).detach()  # STE: forward clamped, grad unclamped
-        g_layer = self._G_MAX * torch.sigmoid(a_used)
-        if not torch.isfinite(g_layer):
-            g_layer = torch.nan_to_num(g_layer, nan=0.0, posinf=self._G_MAX, neginf=0.0)
-
-        # ---- Ricker wavelet basis + weighted sum (chunked over query dim) ----
+        # ---- basis + weighted sum (chunked over query dim) ----
         diff = torch.arange(T, device=hidden_states.device, dtype=torch.float32)
         if T <= chunk_size:
-            bias = self._bias_chunk(0, T, pi_scale, beta, diff, eps)  # [B, T, T]
+            bias = self._bias_chunk(0, T, pi_scale_for_sum, nonnull_gate, beta_m, diff, eps)
         else:
             chunks = []
             for q0 in range(0, T, chunk_size):
                 q1 = min(q0 + chunk_size, T)
-                chunks.append(self._bias_chunk(q0, q1, pi_scale, beta, diff, eps))
+                chunks.append(
+                    self._bias_chunk(q0, q1, pi_scale_for_sum, nonnull_gate, beta_m, diff, eps)
+                )
             bias = torch.cat(chunks, dim=1)  # [B, T, T]
 
-        # g_bias_max clamp matches FLA default (wavelet_ctxscale_g_bias_max=4.0)
-        out = (g_layer * bias).clamp(min=-self._G_BIAS_MAX, max=self._G_BIAS_MAX)
+        # g_layer is fixed at 1.0 (path_attn.py removed the learnable per-layer gate
+        # on 2026-08-01); only the g_bias_max clamp remains.
+        out = bias.clamp(min=-self._G_BIAS_MAX, max=self._G_BIAS_MAX)
 
-        # branch_amp: g_null controls overall QWAB contribution (0=off, 1=fully active).
-        # ~0   → QWAB branch collapsed/disabled
-        # ~0.5 → QWAB moderately active (sigmoid init value)
-        # ~1   → QWAB strongly active
-        # This is a branch-amplitude monitor, NOT a null-gate collapse penalty.
-        branch_amp = g_null.squeeze(-1).mean().to(dtype=hidden_states.dtype)
+        branch_amp = g0_gate.squeeze(-1).mean().to(dtype=hidden_states.dtype)
 
         return out.unsqueeze(1).to(dtype=hidden_states.dtype), branch_amp  # [B, 1, T, T], scalar
 
@@ -903,7 +992,7 @@ class GPT2Attention(nn.Module):
                     _beta = torch.sigmoid(self.path_beta_proj(_hs)).to(torch.float32) * 2.0
 
                     # Single call — M_base also used for gate conditioning when sparse gate is on.
-                    _E_base, _M_base, _, _ = _path_ut_base_raw(_q, _k, _w, _beta)
+                    _E_base, _M_base, _, _, _, _ = _path_ut_base_raw(_q, _k, _w, _beta)
                     _E_base = _E_base.nan_to_num(nan=0.0, posinf=0.0, neginf=0.0)
                     _M_base = _M_base.nan_to_num(nan=0.0, posinf=0.0, neginf=0.0)
 
