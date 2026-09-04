@@ -2,7 +2,7 @@
 #SBATCH --job-name=ricker128_realbias_L8192
 #SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/logs/%j_K1_rho128_ricker_s42_L8192_a6000_realbias.txt
 #SBATCH --partition=gpu_long
-#SBATCH --gres=gpu:a100-80:1
+#SBATCH --gres=gpu:a6000:1
 #SBATCH --time=48:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
@@ -10,9 +10,11 @@
 # Table 4 (GPT-2 small) QWAB/Ricker rho=128, L8192 only, REAL bias (pytorch impl, not triton).
 # Split per-length across separate a6000 GPUs per user request (2026-09-04), instead of one
 # sequential all-lengths job stuck waiting on DRAINed a100-80 / fully-occupied p6000.
-# CAVEAT: L8192+ previously confirmed OOM on a single 47.4GB a6000/6000 even with bf16 (needs
-# p6000 96GB / a100-80). This may fail again for the same reason -- worth retrying since per-length
-# isolation means a failure here doesn't block the other 5 lengths.
+# UPDATE 2026-09-04: earlier OOM traced to _log_ctxscale_shift_v0_monitor (a diagnostic hook that
+# does .float()+index_select on the full attention-prob tensor), NOT the main computation -- same
+# root cause already found+fixed for medium model earlier in PAT-253. Using a sidecar cfg with
+# wavelet_logit_bias_log_sample_heads=1 (was 4) to shrink the diagnostic tensor; retrying on a6000
+# instead of waiting on drained a100-80 / full p6000.
 # Same checkpoint as the rest of this row: runs/pat244_dual_temp/K1_L512_me14_rho128_ricker_s42/checkpoint-15000
 
 set -euxo pipefail
@@ -29,7 +31,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 BASE=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling
 CKPT="${BASE}/runs/pat244_dual_temp/K1_L512_me14_rho128_ricker_s42/checkpoint-15000"
-CFG_PATH="${BASE}/runs/pat244_dual_temp/K1_L512_me14_rho128_ricker_s42/supply_model.cfg"
+CFG_PATH="${BASE}/_gen_pat253_table4_extralen/K1_rho128_ricker_s42_lowmem_log.cfg"
 cd "${BASE}"
 
 BSIZE=8192
