@@ -49,7 +49,6 @@ torchrun --nproc_per_node=1 --master_port=${MASTER_PORT} ./run_clm.py \
   --do_eval --block_size ${BSIZE} \
   --per_device_eval_batch_size 1 \
   --path_attn_impl pytorch \
-  
   --report_to none \
   --output_dir "${OUTPUT}" --overwrite_output_dir \
   --logging_dir "${OUTPUT}/log" \
