@@ -21,6 +21,12 @@
 # param count in the GPT-2-medium (~350M) class, checkpoint save/load round trip.
 # hidden_size=1024/num_hidden_layers=24/num_heads=16 mirrors GPT-2-medium's shape
 # (FoX's own default is 2048/24/32, sized for much larger models).
+# NOTE: first attempt included pad_token_id=50256 in --config_overrides and crashed with
+# "TypeError: You can only update int, float, bool or string values in the config, got
+# 50256 for key pad_token_id" -- ForgettingTransformerConfig defaults pad_token_id=None,
+# and HF's update_from_string type-checks against the CURRENT (None) value, not the
+# annotated Optional[int] type, so it refuses the update. Dropped pad_token_id from the
+# override string; not needed for this packed-sequence pretrain (no padding used).
 
 set -euxo pipefail
 
@@ -42,7 +48,7 @@ mkdir -p "${RUN_OUT}"
 
 python ./run_clm.py \
   --model_type forgetting_transformer --tokenizer_name gpt2 \
-  --config_overrides "hidden_size=1024,num_hidden_layers=24,num_heads=16,vocab_size=50257,tie_word_embeddings=True,bos_token_id=50256,eos_token_id=50256,pad_token_id=50256" \
+  --config_overrides "hidden_size=1024,num_hidden_layers=24,num_heads=16,vocab_size=50257,tie_word_embeddings=True,bos_token_id=50256,eos_token_id=50256" \
   --learning_rate 1e-4 --weight_decay 0.01 \
   --per_device_train_batch_size 4 --per_device_eval_batch_size 4 \
   --block_size 512 --dataset_name wikitext --dataset_config_name wikitext-103-raw-v1 \
