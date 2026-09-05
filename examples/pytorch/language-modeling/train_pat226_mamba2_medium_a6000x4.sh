@@ -68,6 +68,7 @@ python -m torch.distributed.run --nproc_per_node=4 --master_port=${MASTER_PORT} 
   --warmup_ratio 0.05 --bf16 True --tf32 True \
   --preprocessing_num_workers 8 \
   --output_dir "${RUN_OUT}" --overwrite_output_dir \
+  --ddp_timeout 21600 \
   --seed 42
 
 echo "=== PAT-226 mamba2 medium OWT pretrain done (4xa6000) ==="
