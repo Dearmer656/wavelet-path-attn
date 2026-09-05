@@ -5145,8 +5145,25 @@ def main():
     else:
         model = AutoModelForCausalLM.from_config(config, trust_remote_code=model_args.trust_remote_code)
         n_params = sum({p.data_ptr(): p.numel() for p in model.parameters()}.values())
-        logger.info(f"Training new model from scratch - Total size={n_params / 2**20:.2f}M params")    
+        logger.info(f"Training new model from scratch - Total size={n_params / 2**20:.2f}M params")
         _sanitize_wavelet_scalar_params(model, config, missing_keys=None)
+        # PAT-226-FoX: fla's ForgettingTransformerPreTrainedModel._init_weights defaults
+        # rescale_prenorm_residual=False, and post_init() -> self.apply(self._init_weights)
+        # never overrides it, so the GPT-2-style 1/sqrt(2*num_hidden_layers) depth-scaled
+        # residual-projection init that the method itself implements is dead code on the
+        # standard AutoModelForCausalLM.from_config path. Without it, a 24-layer config's
+        # residual stream blows up in variance, producing initial loss >> ln(vocab_size)
+        # (observed: loss~67 at step 500 vs ALiBi's ~8 on the same data/vocab, decreasing
+        # only very slowly over thousands of steps) -- confirmed by re-reading
+        # modeling_forgetting_transformer.py's _init_weights source directly. Re-apply it
+        # here with the flag forced on, from-scratch only (this branch never runs on a
+        # from_pretrained/finetune path, so an already-trained checkpoint's weights are
+        # never touched).
+        if str(getattr(config, "model_type", "")).strip().lower() == "forgetting_transformer":
+            import functools
+            model.apply(functools.partial(model._init_weights, rescale_prenorm_residual=True))
+            logger.info("[FoX] re-applied _init_weights with rescale_prenorm_residual=True "
+                        "(GPT-2-style depth-scaled residual init; fla's default leaves this off)")
 
     # PAT-226: Mamba2Cache is not a plain tensor/list/tuple/dict, so accelerate's
     # distributed-eval gather (_pad_across_processes) cannot handle it when
