@@ -23,6 +23,11 @@
 # Backbone: runs/pat226_mamba2/medium_owt_6000x4/checkpoint-80000 (job 577955).
 # Submit with --dependency=afterok:577955 so this only starts once that pretrain finishes.
 # Uses mamba2_env (real CUDA causal_conv1d/mamba_ssm kernels), same as the pretrain.
+# 2026-09-07: added --save_safetensors False (missing in the first attempt, job 578239,
+# which FAILED at its first save_steps checkpoint with "shared tensors
+# {backbone.embeddings.weight, lm_head.weight}" -- safetensors' default format rejects
+# tied weights; the pretrain script already carries this flag for the same reason, this
+# finetune script just forgot to copy it over).
 
 set -euxo pipefail
 
@@ -57,6 +62,7 @@ python -m torch.distributed.run --nproc_per_node=4 --master_port=${MASTER_PORT} 
   --num_train_epochs 10 \
   --logging_steps 500 \
   --save_steps 5000 \
+  --save_safetensors False \
   --per_device_train_batch_size 8 \
   --per_device_eval_batch_size 8 \
   --gradient_accumulation_steps 2 \
