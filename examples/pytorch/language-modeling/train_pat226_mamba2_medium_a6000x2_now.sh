@@ -1,12 +1,21 @@
 #!/bin/bash
-#SBATCH --job-name=mamba2_med_6k
-#SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/pat226_mamba2/medium_owt_6000x4/%j_train.txt
+#SBATCH --job-name=mamba2_med_a6k2
+#SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/pat226_mamba2/medium_owt_a6000x4/%j_train.txt
 #SBATCH --partition=gpu_long
-#SBATCH --gres=gpu:6000:4
+#SBATCH --gres=gpu:a6000:2
 #SBATCH --time=100:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 
+# TEMP 2-GPU variant (2026-09-06): is-nlp QOSMaxGRESPerUser cap (12) is fully used by
+# other running jobs, so the real 4xa6000 job (train_pat226_mamba2_medium_a6000x4.sh,
+# submitted as 577950) cannot start. This runs the SAME config/output_dir with
+# nproc_per_node=2 instead of 4, compensating with gradient_accumulation_steps=2 to
+# keep global_bs=16*2*2=64 identical -- gets real training moving now rather than
+# waiting in queue; will just take ~2x longer wall-clock to reach 80k steps. 577950
+# (the 4-GPU duplicate targeting the same output_dir) should be cancelled before this
+# runs, to avoid a later --overwrite_output_dir collision.
+#
 # PAT-164/PAT-226: Mamba-2 medium (370M ladder step) pretrain on OpenWebText.
 # Deltas from the 130M PAT-226 script (train_pat226_mamba2_wt103_s42.sh):
 #   - config scaled to 370M: hidden_size 768->1024, num_hidden_layers 24->48, num_heads 24->32
@@ -18,13 +27,16 @@
 #
 # 2026-09-06: SWITCHED from this project's cross-baseline-uniform recipe (lr=1e-4,
 # weight_decay=0.01, warmup_ratio=0.05) to Mamba's OWN published GPT-3-style recipe
-# (lr=3e-4 for the 370M rung, weight_decay=0.1, warmup_ratio=0.10, adam_beta2=0.95,
-# max_grad_norm=1.0 -- verified via a live search, not assumed) after the uniform-recipe
-# run (job 577420, cancelled) plateaued at loss~12.85 (well above ln(vocab)~10.8) at
-# 47k/80k steps. Ruled out the FoX-style dead rescale_prenorm_residual bug (this
-# architecture defaults it True). This is a baseline, not worth a full lr sweep --
-# adopting the paper's own coherent recipe wholesale rather than mixing it piecemeal.
-# Parallel run on a6000/p6000 (train_pat226_mamba2_medium_a6000x4.sh /
+# (lr=3e-4 for the 370M rung, weight_decay=0.1, warmup_ratio=0.10 i.e. 10% of steps,
+# adam_beta2=0.95, max_grad_norm=1.0 -- verified via a live search, not assumed) after the
+# uniform-recipe run (job 577420, cancelled) plateaued at loss~12.85 (well above the
+# ln(vocab)~10.8 random baseline) at 47k/80k steps with no sign of breaking through --
+# per-run investigation ruled out the FoX-style dead rescale_prenorm_residual bug (this
+# architecture defaults it True, already verified via the saved checkpoint's config.json),
+# leaving an under-tuned lr/recipe mismatch as the leading explanation. This is a baseline,
+# not something worth a full lr sweep for -- adopting the paper's own coherent recipe
+# wholesale rather than mixing it piecemeal with this project's GPT-2-tuned defaults.
+# Parallel run on 6000/p6000 (train_pat226_mamba2_medium_6000x4.sh /
 # ..._p6000x4.sh) to compare stability/speed across hardware; p6000 (Quadro P6000, Pascal)
 # is untested with mamba_ssm/causal_conv1d at this project -- may simply fail to build/run.
 # Uses mamba2_env (real CUDA causal_conv1d/mamba_ssm kernels) -- NOT latest_transformers --
@@ -46,13 +58,13 @@ export WANDB_DISABLED=true
 export WANDB_MODE=disabled
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-RUN_OUT="${WORKDIR}/runs/pat226_mamba2/medium_owt_6000x4"
+RUN_OUT="${WORKDIR}/runs/pat226_mamba2/medium_owt_a6000x4"
 mkdir -p "${RUN_OUT}/train"
 MASTER_PORT=$(( 24226 + SLURM_JOB_ID % 1000 ))
 
-echo "================= BEGIN RUN PAT-226 mamba2 medium(370M) OWT pretrain: 4x6000 ================="
+echo "================= BEGIN RUN PAT-226 mamba2 medium(370M) OWT pretrain: 2xa6000 (temp, quota-limited) ================="
 
-python -m torch.distributed.run --nproc_per_node=4 --master_port=${MASTER_PORT} ./run_clm.py \
+python -m torch.distributed.run --nproc_per_node=2 --master_port=${MASTER_PORT} ./run_clm.py \
   --model_type mamba2 --tokenizer_name gpt2 \
   --config_overrides "hidden_size=1024,num_hidden_layers=48,state_size=128,expand=2,head_dim=64,num_heads=32,vocab_size=50257,tie_word_embeddings=True,bos_token_id=50256,eos_token_id=50256,pad_token_id=50256" \
   --dataset_name openwebtext --validation_split_percentage 1 \
@@ -64,7 +76,7 @@ python -m torch.distributed.run --nproc_per_node=4 --master_port=${MASTER_PORT} 
   --logging_dir "${RUN_OUT}/train_log" --logging_steps 500 \
   --save_steps 10000 --save_safetensors False \
   --per_device_train_batch_size 16 --per_device_eval_batch_size 16 \
-  --gradient_accumulation_steps 1 \
+  --gradient_accumulation_steps 2 \
   --learning_rate 3e-4 --weight_decay 0.1 \
   --adam_beta2 0.95 --max_grad_norm 1.0 \
   --warmup_ratio 0.10 --bf16 True --tf32 True \
@@ -73,4 +85,4 @@ python -m torch.distributed.run --nproc_per_node=4 --master_port=${MASTER_PORT} 
   --ddp_timeout 21600 \
   --seed 42
 
-echo "=== PAT-226 mamba2 medium OWT pretrain done (4x6000) ==="
+echo "=== PAT-226 mamba2 medium OWT pretrain done (2xa6000, temp) ==="

@@ -19,7 +19,7 @@
 # 2026-09-06: SWITCHED from this project's cross-baseline-uniform recipe (lr=1e-4,
 # weight_decay=0.01, warmup_ratio=0.05) to Mamba's OWN published GPT-3-style recipe
 # (lr=3e-4 for the 370M rung, weight_decay=0.1, warmup_ratio=0.10, adam_beta2=0.95,
-# max_grad_norm=0.1 -- verified via a live search, not assumed) after the uniform-recipe
+# max_grad_norm=1.0 -- verified via a live search, not assumed) after the uniform-recipe
 # run (job 577420, cancelled) plateaued at loss~12.85 (well above ln(vocab)~10.8) at
 # 47k/80k steps. Ruled out the FoX-style dead rescale_prenorm_residual bug (this
 # architecture defaults it True). This is a baseline, not worth a full lr sweep --
@@ -66,7 +66,7 @@ python -m torch.distributed.run --nproc_per_node=4 --master_port=${MASTER_PORT} 
   --per_device_train_batch_size 16 --per_device_eval_batch_size 16 \
   --gradient_accumulation_steps 1 \
   --learning_rate 3e-4 --weight_decay 0.1 \
-  --adam_beta2 0.95 --max_grad_norm 0.1 \
+  --adam_beta2 0.95 --max_grad_norm 1.0 \
   --warmup_ratio 0.10 --bf16 True --tf32 True \
   --preprocessing_num_workers 8 \
   --output_dir "${RUN_OUT}" --overwrite_output_dir \
