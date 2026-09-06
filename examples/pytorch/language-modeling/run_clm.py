@@ -198,6 +198,34 @@ class ModelArguments:
         default=10000.0,
         metadata={"help": "RoPE base frequency theta. Increase for NTK-aware length extrapolation."},
     )
+    use_yarn: bool = field(
+        default=False,
+        metadata={"help": "Enable YaRN scaling on top of rotary positional encoding."},
+    )
+    yarn_factor: float = field(
+        default=4.0,
+        metadata={"help": "YaRN scaling factor."},
+    )
+    yarn_beta_fast: float = field(
+        default=32.0,
+        metadata={"help": "YaRN beta_fast boundary."},
+    )
+    yarn_beta_slow: float = field(
+        default=1.0,
+        metadata={"help": "YaRN beta_slow boundary."},
+    )
+    yarn_original_max_position_embeddings: Optional[int] = field(
+        default=None,
+        metadata={"help": "Original pre-YaRN context length."},
+    )
+    yarn_attention_factor: Optional[float] = field(
+        default=None,
+        metadata={"help": "Optional YaRN attention scaling override."},
+    )
+    yarn_truncate: bool = field(
+        default=True,
+        metadata={"help": "Whether to truncate the YaRN correction range."},
+    )
     bias_type: str = field(
         default="wavelet",
         metadata={
@@ -4946,6 +4974,13 @@ def main():
         # incorrectly uses eval block_size — pass --qwab_train_block_size explicitly.
         config.qwab_train_block_size = block_size
     config.rope_theta = float(model_args.rope_theta)
+    config.use_yarn = bool(model_args.use_yarn)
+    config.yarn_factor = float(model_args.yarn_factor)
+    config.yarn_beta_fast = float(model_args.yarn_beta_fast)
+    config.yarn_beta_slow = float(model_args.yarn_beta_slow)
+    config.yarn_original_max_position_embeddings = model_args.yarn_original_max_position_embeddings
+    config.yarn_attention_factor = model_args.yarn_attention_factor
+    config.yarn_truncate = bool(model_args.yarn_truncate)
     config.bias_type = str(model_args.bias_type)
     # Expose tokenizer globally for dataset map helpers
     global GLOBAL_TOKENIZER
@@ -5164,6 +5199,16 @@ def main():
             model.apply(functools.partial(model._init_weights, rescale_prenorm_residual=True))
             logger.info("[FoX] re-applied _init_weights with rescale_prenorm_residual=True "
                         "(GPT-2-style depth-scaled residual init; fla's default leaves this off)")
+            # DEBUG (temporary): directly verify the rescale actually landed on the weights
+            # that get trained, on every rank (not gated by logger.info's rank-0-only level),
+            # to isolate whether the DDP-vs-single-process loss discrepancy is really about
+            # the rescale being skipped/overwritten under DDP, or something else entirely.
+            _rank_env = os.environ.get("RANK", os.environ.get("LOCAL_RANK", "?"))
+            for _name, _p in model.named_parameters():
+                if _name.endswith(".attn.o_proj.weight") or _name.endswith(".attn.q_proj.weight") \
+                        or _name.endswith(".mlp.down_proj.weight") or _name.endswith(".mlp.up_proj.weight"):
+                    if ".layers.0." in _name:
+                        print(f"[FoX-DEBUG rank={_rank_env}] {_name} std={_p.detach().float().std().item():.6f}", flush=True)
 
     # PAT-226: Mamba2Cache is not a plain tensor/list/tuple/dict, so accelerate's
     # distributed-eval gather (_pad_across_processes) cannot handle it when
