@@ -8,12 +8,15 @@
 #SBATCH --cpus-per-task=4
 
 # PAT-164: GPT-2 medium plain-ALiBi fine-tune on mix dataset, fp32 (no --bf16).
-# Direct counterpart of train_gpt2_medium_owt_mix_rotary_10ep_s42_fp32.sh (block_size=512,
-# 10 epochs, global_bs=64, lr=1e-4/wd=0.0/warmup_ratio=0.05, no eval/early-stopping) --
-# mirrored 1:1 except pe_method swapped to alibi; attn_implementation kept at eager
-# (not the pretrain's flash_attention_2) to match every other baseline's finetune stage
-# convention (this project already verified ALiBi's eager vs flash_attention_2 forward
-# are numerically equivalent, per the ckpt60000 ppl quick-check).
+# 2026-09-06: cfg aligned with QWAB's own medium mix finetune
+# (train_gpt2_medium_owt_mix_WR_10ep.sh) for comparability: block_size=512, 10 epochs,
+# lr=1e-4/wd=0.0/warmup_ratio=0.05, per_device_train/eval_batch_size=8 +
+# gradient_accumulation_steps=2 (global_bs=8*4*2=64, matching QWAB's own 8/accum2 exactly
+# rather than the Rotary-finetune template's 2/accum8). attn_implementation=flash_attention_2
+# (QWAB's own finetune uses its native path_attn implementation, not eager -- ALiBi's
+# equivalent "native" choice is flash_attention_2, which this project already verified is
+# numerically equivalent to eager for ALiBi at eval time, per the ckpt60000 ppl quick-check;
+# also matches this checkpoint's own pretrain attn_implementation).
 # Backbone: runs/gpt2_medium_owt_alibi_flash_80k_a6000x4/checkpoint-80000 (job 577056).
 # Submit with --dependency=afterok:577056 so this only starts once that pretrain finishes.
 
@@ -53,13 +56,13 @@ echo "=== Plain ALiBi medium mix finetune (fp32): 4xa6000 ==="
   --num_train_epochs 10 \
   --logging_steps 500 \
   --save_steps 5000 \
-  --per_device_train_batch_size 2 \
-  --per_device_eval_batch_size 2 \
-  --gradient_accumulation_steps 8 \
+  --per_device_train_batch_size 8 \
+  --per_device_eval_batch_size 8 \
+  --gradient_accumulation_steps 2 \
   --learning_rate 1e-4 \
   --weight_decay 0.0 \
   --warmup_ratio 0.05 \
-  --attn_implementation eager \
+  --attn_implementation flash_attention_2 \
   --pe_method alibi \
   --wavelet_router False \
   --router_band_num 8 \

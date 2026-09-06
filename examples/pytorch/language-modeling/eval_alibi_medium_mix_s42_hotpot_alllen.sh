@@ -20,7 +20,10 @@
 # L512/L2048/L4096: front-placed hotpot_long_dev.jsonl. L8192/12288/16384: per-length
 # hotpot_long_dev_uniform_{L}only.jsonl (still front-pinned in practice -- see PAT-253
 # session notes on build_context_budgeted's respect_doc_order default).
-# eager attention throughout (matches the finetune's own attn_implementation).
+# eager attention throughout for eval (the finetune itself now uses flash_attention_2,
+# 2026-09-06 update to match QWAB's own finetune convention -- eval stays on eager since
+# this project already verified ALiBi's eager vs flash_attention_2 are numerically
+# equivalent, and eager avoids any flash-attention edge cases at very long eval lengths).
 
 set -euxo pipefail
 
