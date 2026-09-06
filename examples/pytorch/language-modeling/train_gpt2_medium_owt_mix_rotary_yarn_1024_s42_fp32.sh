@@ -29,6 +29,10 @@
 # mostly padding at this block_size; the real long-context training signal comes from the
 # HotpotQA portion (88.9% of "mix"), which is deliberately packed to fill block_size via
 # build_context_budgeted.
+# 2026-09-06: lr/adam_beta2 corrected to match the YaRN paper's own s=16 finetune recipe
+# (verified via live search, not assumed): lr=2e-5 (was 1e-4, this project's baseline
+# convention, 5x too high), adam_beta2=0.95 (was HF default 0.999). weight_decay=0.0 and
+# warmup_ratio=0.05 (=20/400 steps) already matched the paper's values.
 
 set -euxo pipefail
 
@@ -69,9 +73,10 @@ echo "=== Rotary+YaRN medium mix finetune @ L1024 (fp32, 400 steps per YaRN pape
   --per_device_train_batch_size 2 \
   --per_device_eval_batch_size 2 \
   --gradient_accumulation_steps 8 \
-  --learning_rate 1e-4 \
+  --learning_rate 2e-5 \
   --weight_decay 0.0 \
   --warmup_ratio 0.05 \
+  --adam_beta2 0.95 \
   --attn_implementation eager \
   --pe_method rotary \
   --use_yarn True \
