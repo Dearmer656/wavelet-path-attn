@@ -59,9 +59,15 @@ cd "${WORKDIR}"
 OUT="${WORKDIR}/runs/gpt2_medium_owt_qwab_pathattn_fromscratch_80k"
 mkdir -p "${OUT}/train"
 
+# 2026-09-07: rho=256 requested, K=1 (single scale), bias_type=wavelet (Ricker, the
+# default -- multiplier=1.0). rho = 2^(scale_max_exp/2), so rho=256 => scale_max_exp=16.0
+# (verified via modeling_gpt2.py's SCALE_MULTIPLIER_DICT/scale formula, not assumed;
+# rho=128, the codebase's own scale_max_exp=14.0 default, checks out under this same
+# formula: 2^(14/2)=128).
 CFG_PATH="${OUT}/supply_model.cfg"
 cat > "${CFG_PATH}" <<'CFG'
-wavelet_ctxscale_scale_max_exp=[14.0, 14.0, 14.0, 14.0, 14.0, 14.0, 14.0, 14.0]
+wavelet_ctxscale_k=1
+wavelet_ctxscale_scale_max_exp=16.0
 CFG
 
 MASTER_PORT=$(( 24900 + SLURM_JOB_ID % 1000 ))
