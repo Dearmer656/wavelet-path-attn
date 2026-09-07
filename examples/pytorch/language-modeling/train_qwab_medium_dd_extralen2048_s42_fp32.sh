@@ -47,6 +47,17 @@ PRETRAIN_CKPT="${WORKDIR}/runs/mix_medium_owt_dd_10ep/checkpoint-15000"
 OUT="${WORKDIR}/runs/mix_medium_owt_dd_yarn2048_s42_fp32"
 mkdir -p "${OUT}"
 
+# 2026-09-07: job 578366 FAILED (3min in) with "wavelet_ctxscale_scale_max_exp must be a
+# list/tuple of length 8 when wavelet_ctxscale_k=8, not a single value: 14.0". This
+# checkpoint predates the wavelet_ctxscale_k/scale_max_exp fields entirely (absent from
+# both its own supply_model.cfg and its saved config.json) -- the current codebase's
+# defaults (k=8, scale_max_exp=14.0 scalar) are mutually incompatible with each other's own
+# validation, a latent bug unrelated to this script. Writing an explicit list here to
+# satisfy the check, matching the original checkpoint's supply_model.cfg content plus this
+# one addition (rather than fixing the codebase default, out of scope here).
+cat "${WORKDIR}/runs/mix_medium_owt_dd_10ep/supply_model.cfg" > "${OUT}/supply_model.cfg"
+echo "wavelet_ctxscale_scale_max_exp=[14.0, 14.0, 14.0, 14.0, 14.0, 14.0, 14.0, 14.0]" >> "${OUT}/supply_model.cfg"
+
 MASTER_PORT=$(( 24800 + SLURM_JOB_ID % 1000 ))
 
 echo "=== QWAB medium (dd headline) extra L2048 finetune (400 steps, matching YaRN's recipe): 4xa6000 ==="
