@@ -43,9 +43,19 @@ cd "${BASE}"
 
 for BSIZE in 1024 2048 4096 8192 12288 16384; do
   OUTPUT="${BASE}/runs/gpt2_medium_owt_pytorch_level_path_attn/ppl_quick_ckpt80000/L${BSIZE}"
+  if [ -f "${OUTPUT}/eval_results.json" ]; then
+    echo "=== PaTH-only medium ckpt80000 L${BSIZE} already done, skipping ==="
+    python3 -c "import json; d=json.load(open('${OUTPUT}/eval_results.json')); print(f'PaTH-only medium ckpt80000 L${BSIZE} (1000 samples): eval_loss={d[\"eval_loss\"]:.4f} ppl={d[\"perplexity\"]:.2f}')"
+    continue
+  fi
   mkdir -p "${OUTPUT}"
   echo "=== PaTH-only medium ckpt80000 ppl @ block_size=${BSIZE} (1000 samples) ==="
   MASTER_PORT=$(( 13300 + SLURM_JOB_ID % 10000 + BSIZE % 100 ))
+  # 578491 OOM'd starting at L4096 (only 1024/2048 succeeded in fp32) -- path_attn's
+  # wavelet ctxscale bias computation apparently isn't as memory-light as the core O(T)
+  # PaTH state; fall back to bf16 from L4096 onward.
+  BF16_FLAG="False"
+  if [ "${BSIZE}" -ge 4096 ]; then BF16_FLAG="True"; fi
   python -m torch.distributed.run --nproc_per_node=2 --master_port=${MASTER_PORT} ./run_clm.py \
     --model_type gpt2 --tokenizer_name gpt2 \
     --model_name_or_path "${CKPT}" \
@@ -53,6 +63,7 @@ for BSIZE in 1024 2048 4096 8192 12288 16384; do
     --validation_split_percentage 1 \
     --max_eval_samples 1000 \
     --preprocessing_num_workers 8 \
+    --bf16 "${BF16_FLAG}" \
     --pe_method vanilla --attn_implementation path_attn \
     --path_use_qk_norm false \
     --path_use_low_rank_w true \

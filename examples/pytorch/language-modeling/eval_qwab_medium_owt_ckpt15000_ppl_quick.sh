@@ -47,14 +47,25 @@ cd "${BASE}"
 
 for BSIZE in 1024 2048 4096 8192 12288 16384; do
   OUTPUT="${BASE}/runs/mix_medium_owt_dd_10ep/ppl_quick_ckpt15000/L${BSIZE}"
+  if [ -f "${OUTPUT}/eval_results.json" ]; then
+    echo "=== QWAB medium ckpt15000 L${BSIZE} already done, skipping ==="
+    python3 -c "import json; d=json.load(open('${OUTPUT}/eval_results.json')); print(f'QWAB medium ckpt15000 L${BSIZE} (1000 samples, OWT): eval_loss={d[\"eval_loss\"]:.4f} ppl={d[\"perplexity\"]:.2f}')"
+    continue
+  fi
   mkdir -p "${OUTPUT}"
   echo "=== QWAB medium ckpt15000 ppl @ block_size=${BSIZE} (1000 samples, on OWT -- off-distribution) ==="
   MASTER_PORT=$(( 13400 + SLURM_JOB_ID % 10000 + BSIZE % 100 ))
+  # PaTH-only (no distillation) already needed bf16 from L4096 on the same 48GB a6000;
+  # QWAB's extra teacher forward pass (distill_teacher=wavelet) is heavier, so start bf16
+  # one length earlier as a precaution.
+  BF16_FLAG="False"
+  if [ "${BSIZE}" -ge 2048 ]; then BF16_FLAG="True"; fi
   python -m torch.distributed.run --nproc_per_node=2 --master_port=${MASTER_PORT} ./run_clm.py \
     --model_type gpt2 --tokenizer_name gpt2 \
     --model_name_or_path "${CKPT}" \
     --dataset_name openwebtext \
     --validation_split_percentage 1 \
+    --bf16 "${BF16_FLAG}" \
     --max_eval_samples 1000 \
     --preprocessing_num_workers 8 \
     --pe_method vanilla --attn_implementation path_attn \
