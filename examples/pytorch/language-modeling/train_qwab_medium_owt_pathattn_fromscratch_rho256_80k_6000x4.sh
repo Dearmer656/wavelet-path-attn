@@ -24,9 +24,14 @@
 # architecture (path_attn + wavelet ctxscale bias) vs the other baselines' pretrains.
 #
 # GPU: 4x6000 on elm71 (idle, 48GB/GPU) instead of p6000 (elm81/82, 24GB/GPU, currently
-# fully occupied by another user) -- bs=16/accum=1 already fits path_attn's O(T) memory
-# profile comfortably at block_size=512 on p6000's 24GB per the rho=128 script's own
-# analysis, so 6000's 48GB has ample headroom.
+# fully occupied by another user).
+# 2026-09-08: bs=16/accum=1 OOM'd on 6000's 48GB anyway (job 579695, "Tried to allocate
+# 128.00 MiB" with 46.63GB already in use, during the very first forward pass). Root
+# cause: QWAB's wavelet ctxscale bias mechanism is NOT O(T) memory like plain path_attn --
+# fla/layers/path_attn.py's path_ut_base_raw materializes several O(B,H,T,T) intermediate
+# tensors per layer (lower_QK, correction, E_base_raw, etc.) that must be retained for
+# backward, so it behaves closer to eager's O(T^2) profile once the wavelet branch is
+# active. Dropped to bs=8/accum=2 (global_bs=64 unchanged) to fit.
 #
 # Distillation REMOVED (not just disabled) -- same reasoning as the rho=128 script: a
 # from-scratch run has no converged backbone for a distillation teacher signal to be
@@ -79,9 +84,9 @@ echo "=== QWAB (wavelet ctxscale, no distillation) medium FROM-SCRATCH OWT pretr
   --eval_strategy steps --eval_steps 5000 \
   --save_steps 10000 \
   --load_best_model_at_end True --metric_for_best_model eval_loss --greater_is_better False \
-  --per_device_train_batch_size 16 \
-  --per_device_eval_batch_size 16 \
-  --gradient_accumulation_steps 1 \
+  --per_device_train_batch_size 8 \
+  --per_device_eval_batch_size 8 \
+  --gradient_accumulation_steps 2 \
   --learning_rate 1e-4 \
   --weight_decay 0.01 \
   --warmup_ratio 0.05 \

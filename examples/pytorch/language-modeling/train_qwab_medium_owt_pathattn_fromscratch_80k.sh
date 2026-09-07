@@ -97,9 +97,9 @@ echo "=== QWAB (wavelet ctxscale, no distillation) medium FROM-SCRATCH OWT pretr
   --eval_strategy steps --eval_steps 5000 \
   --save_steps 10000 \
   --load_best_model_at_end True --metric_for_best_model eval_loss --greater_is_better False \
-  --per_device_train_batch_size 16 \
-  --per_device_eval_batch_size 16 \
-  --gradient_accumulation_steps 1 \
+  --per_device_train_batch_size 8 \
+  --per_device_eval_batch_size 8 \
+  --gradient_accumulation_steps 2 \
   --learning_rate 1e-4 \
   --weight_decay 0.01 \
   --warmup_ratio 0.05 \
