@@ -2,7 +2,7 @@
 #SBATCH --job-name=xsum_alibi_med
 #SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/mix_medium_owt_alibi_10ep_s42_fp32/ckpt_eval_xsum/%j_xsum_alibi_medium_mix_10ep.txt
 #SBATCH --partition=gpu_long
-#SBATCH --gres=gpu:a6000:4
+#SBATCH --gres=gpu:a6000:2
 #SBATCH --time=24:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
@@ -59,7 +59,7 @@ for i in "${!BLOCK_SIZES[@]}"; do
   mkdir -p "${OUT}"
   echo "  -> block_size=${bs} batch=${batch}"
 
-  python -m torch.distributed.run --nproc_per_node=4 --master_port="${JOB_PORT}" ./run_clm.py \
+  python -m torch.distributed.run --nproc_per_node=2 --master_port="${JOB_PORT}" ./run_clm.py \
     --model_type gpt2 \
     --tokenizer_name gpt2 \
     --model_name_or_path "${CKPT}" \
