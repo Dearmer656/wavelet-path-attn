@@ -11,7 +11,13 @@
 # while eval_alibi_medium_mix_s42_hotpot_alllen.sh (578004) is still working through
 # L12288 sequentially -- same checkpoint-15000 as that script (not the true final
 # checkpoint-15900) for consistency with the other 5 already-landed lengths in that same
-# sweep. bf16 fallback included since L16384 is the longest/most OOM-prone length.
+# sweep.
+# 2026-09-07: eager+bf16 (578723) OOM'd anyway ("Tried to allocate 16.00 GiB" -- eager's
+# O(T^2) attention matrix at T=16384 is the wall, not precision; 578004 hit the same OOM
+# trying L16384 at the end of its own sequential loop). Switched to flash_attention_2,
+# which never materializes the full T x T matrix -- this project already verified ALiBi's
+# eager vs flash_attention_2 forward are numerically equivalent, so this is a memory-only
+# change, not a new untested code path.
 
 set -euxo pipefail
 
@@ -37,7 +43,7 @@ MASTER_PORT=$(( 14500 + SLURM_JOB_ID % 10000 ))
 python -m torch.distributed.run --nproc_per_node=2 --master_port=${MASTER_PORT} ./run_clm.py \
   --model_type gpt2 --tokenizer_name gpt2 \
   --model_name_or_path "${CKPT}" \
-  --attn_implementation eager \
+  --attn_implementation flash_attention_2 \
   --pe_method alibi \
   --bf16 True \
   --dataset_name hotpot_qa --dataset_config_name distractor \
