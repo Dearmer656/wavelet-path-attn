@@ -2,7 +2,7 @@
 #SBATCH --job-name=qwab_med_scratch
 #SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/log_file/train/%j_qwab_medium_owt_pathattn_fromscratch_80k.txt
 #SBATCH --partition=gpu_long
-#SBATCH --gres=gpu:6000:4
+#SBATCH --gres=gpu:a100-80:4
 #SBATCH --time=100:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
@@ -35,6 +35,11 @@
 # codebase's own defaults (wavelet_ctxscale_k=8, scale_max_exp=14.0 scalar) fail the
 # codebase's own validation otherwise -- same fix needed for the dd_10ep-based extra-adapt
 # finetune script and its ppl quick-check.
+#
+# 2026-09-07: switched to 4xa100-80 (80GB each) per request, bs 4/accum4 -> 16/accum1
+# (global_bs=64 unchanged) -- PaTH attention is O(T) memory (not O(T^2) like eager), and
+# 80GB has ~1.7x the headroom of the 6000's 48GB, so this is expected to fit; untested,
+# will show as an OOM quickly if not.
 
 set -euxo pipefail
 
@@ -77,9 +82,9 @@ echo "=== QWAB (wavelet ctxscale, no distillation) medium FROM-SCRATCH OWT pretr
   --max_steps 80000 \
   --eval_strategy steps --eval_steps 5000 \
   --load_best_model_at_end True --metric_for_best_model eval_loss --greater_is_better False \
-  --per_device_train_batch_size 4 \
-  --per_device_eval_batch_size 4 \
-  --gradient_accumulation_steps 4 \
+  --per_device_train_batch_size 16 \
+  --per_device_eval_batch_size 16 \
+  --gradient_accumulation_steps 1 \
   --learning_rate 1e-4 \
   --weight_decay 0.01 \
   --warmup_ratio 0.05 \
