@@ -74,7 +74,7 @@ for BSIZE in 1024 2048 4096 8192 12288 16384; do
     --share_freq_across_heads True \
     --output_dir "${OUTPUT}" --overwrite_output_dir \
     --logging_dir "${OUTPUT}/log" \
-    --seed 42 --load_best_model_at_end False \
+    --ddp_timeout 21600 --seed 42 --load_best_model_at_end False \
     --cfg_path "${CFG_PATH}"
   python3 -c "import json; d=json.load(open('${OUTPUT}/eval_results.json')); print(f'PaTH-only medium ckpt80000 L${BSIZE} (1000 samples): eval_loss={d[\"eval_loss\"]:.4f} ppl={d[\"perplexity\"]:.2f}')"
 done
