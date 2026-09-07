@@ -41,11 +41,12 @@
 # 80GB has ~1.7x the headroom of the 6000's 48GB, so this is expected to fit; untested,
 # will show as an OOM quickly if not.
 # 2026-09-07 (later): a100-80 (elm44) stayed drained with no ETA; switched to 4xp6000
-# (24GB each, elm81/82) per request instead. bs 16/accum1 -> 2/accum8 (global_bs=64
-# unchanged) since 24GB is half the 6000's 48GB the original bs=4/accum4 was tuned for --
-# PaTH-only's own ppl quick-check needed bf16 even on 48GB a6000 by L4096, so this pretrain
-# (block_size=512 only, much shorter) should have more headroom, but untested at this
-# exact batch on p6000 specifically.
+# (24GB each, elm81/82) per request instead, first at bs=2/accum8 (conservative), then
+# per follow-up request back to bs=16/accum1 (global_bs=64 unchanged either way) -- this
+# pretrain is block_size=512 only (much shorter than the L4096+ lengths that needed bf16
+# fallback for PaTH-only's own ppl quick-check on 48GB a6000), so bs=16 has a reasonable
+# chance of fitting on p6000's 24GB; untested at this exact combination, will surface as
+# an OOM quickly if not.
 
 set -euxo pipefail
 
@@ -94,9 +95,9 @@ echo "=== QWAB (wavelet ctxscale, no distillation) medium FROM-SCRATCH OWT pretr
   --max_steps 80000 \
   --eval_strategy steps --eval_steps 5000 \
   --load_best_model_at_end True --metric_for_best_model eval_loss --greater_is_better False \
-  --per_device_train_batch_size 2 \
-  --per_device_eval_batch_size 2 \
-  --gradient_accumulation_steps 8 \
+  --per_device_train_batch_size 16 \
+  --per_device_eval_batch_size 16 \
+  --gradient_accumulation_steps 1 \
   --learning_rate 1e-4 \
   --weight_decay 0.01 \
   --warmup_ratio 0.05 \
