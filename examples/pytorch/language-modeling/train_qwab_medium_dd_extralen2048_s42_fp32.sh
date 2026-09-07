@@ -30,6 +30,10 @@
 # block_size=2048 needs >48GB even at the minimum batch, well beyond what plain Rotary+YaRN
 # (no distillation branch) required at the same batch/length. Added
 # --gradient_checkpointing True to cut activation memory (trades recompute for memory).
+# That alone then hit "Expected to have finished reduction in the prior iteration" --
+# gradient checkpointing recomputes forward during backward, which combined with QWAB's
+# conditionally-used wavelet/distillation branches confuses DDP's gradient-ready bucketing;
+# added --ddp_find_unused_parameters True per the error's own suggestion.
 
 set -euxo pipefail
 
@@ -85,6 +89,7 @@ echo "=== QWAB medium (dd headline) extra L2048 finetune (400 steps, matching Ya
   --per_device_eval_batch_size 1 \
   --gradient_accumulation_steps 32 \
   --gradient_checkpointing True \
+  --ddp_find_unused_parameters True \
   --learning_rate 2e-5 \
   --weight_decay 0.0 \
   --warmup_ratio 0.05 \
