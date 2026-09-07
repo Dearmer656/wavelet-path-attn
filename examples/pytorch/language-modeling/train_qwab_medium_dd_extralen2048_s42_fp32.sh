@@ -2,7 +2,7 @@
 #SBATCH --job-name=QWABExtraLen2048
 #SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/log_file/train/%j_qwab_medium_dd_extralen2048_s42_fp32.txt
 #SBATCH --partition=gpu_long
-#SBATCH --gres=gpu:a6000:4
+#SBATCH --gres=gpu:a6000:2
 #SBATCH --time=100:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
@@ -22,8 +22,12 @@
 # adaptation) already beats YaRN's post-finetune L2048 (0.6031) -- this run checks whether
 # giving QWAB the same extra 400-step L2048 budget changes that picture (pre-empting the
 # "you didn't give QWAB equal adaptation opportunity" question).
-# Batch size matches the Rotary+YaRN L2048 finetune (1/accum16, not QWAB's own 4/accum4)
+# Batch size matches the Rotary+YaRN L2048 finetune (1/accum, not QWAB's own 4/accum4)
 # since block_size=2048 (4x the original 512) needs the same memory headroom reduction.
+# 2026-09-07: switched 4xa6000(accum16) -> 2xa6000(accum32) per request, global_bs=64
+# unchanged (1*2*32=1*4*16=64). Also OOM'd on 4x3090 (24GB, distill_teacher=wavelet's
+# extra teacher forward pass roughly doubles activation memory vs plain Rotary+YaRN,
+# which has no distillation branch) -- a6000's 48GB has the headroom 3090 didn't.
 
 set -euxo pipefail
 
@@ -63,7 +67,7 @@ MASTER_PORT=$(( 24800 + SLURM_JOB_ID % 1000 ))
 echo "=== QWAB medium (dd headline) extra L2048 finetune (400 steps, matching YaRN's recipe): 4xa6000 ==="
 
 /cl/work5/hongyu-s/conda/envs/latest_transformers/bin/torchrun \
-  --nproc_per_node=4 \
+  --nproc_per_node=2 \
   --master_port="${MASTER_PORT}" \
   ./run_clm.py \
   --model_type gpt2 \
@@ -77,7 +81,7 @@ echo "=== QWAB medium (dd headline) extra L2048 finetune (400 steps, matching Ya
   --save_steps 400 \
   --per_device_train_batch_size 1 \
   --per_device_eval_batch_size 1 \
-  --gradient_accumulation_steps 16 \
+  --gradient_accumulation_steps 32 \
   --learning_rate 2e-5 \
   --weight_decay 0.0 \
   --warmup_ratio 0.05 \
