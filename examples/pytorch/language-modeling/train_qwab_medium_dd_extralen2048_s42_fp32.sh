@@ -2,7 +2,7 @@
 #SBATCH --job-name=QWABExtraLen2048
 #SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/log_file/train/%j_qwab_medium_dd_extralen2048_s42_fp32.txt
 #SBATCH --partition=gpu_long
-#SBATCH --gres=gpu:a6000:2
+#SBATCH --gres=gpu:p6000:2
 #SBATCH --time=100:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
@@ -35,8 +35,14 @@
 # conditionally-used wavelet/distillation branches confuses DDP's gradient-ready bucketing;
 # added --ddp_find_unused_parameters True per the error's own suggestion. That then hit
 # "Expected to mark a variable ready only once" (reused params across reentrant backward
-# passes) -- default reentrant checkpointing doesn't play well with DDP here; switched to
-# --gradient_checkpointing_kwargs '{"use_reentrant": false}' per that error's own suggestion.
+# passes); switched to --gradient_checkpointing_kwargs '{"use_reentrant": false}'.
+# 2026-09-07 (later): verified --gradient_checkpointing is actually a NO-OP in this fork's
+# GPT2Model -- grepped modeling_gpt2.py, there is no torch.utils.checkpoint call anywhere;
+# `self.gradient_checkpointing` only gates whether past_key_values gets passed, unrelated to
+# activation recomputation. So none of the three checkpointing-related flags above were
+# doing anything (the run that succeeded, 578411, did so for some other/unconfirmed reason,
+# not because of them). Reverted to the clean recipe (no checkpointing flags) and switched
+# to 2xp6000 (24GB each) per explicit request.
 
 set -euxo pipefail
 
@@ -91,9 +97,6 @@ echo "=== QWAB medium (dd headline) extra L2048 finetune (400 steps, matching Ya
   --per_device_train_batch_size 1 \
   --per_device_eval_batch_size 1 \
   --gradient_accumulation_steps 32 \
-  --gradient_checkpointing True \
-  --gradient_checkpointing_kwargs '{"use_reentrant": false}' \
-  --ddp_find_unused_parameters True \
   --learning_rate 2e-5 \
   --weight_decay 0.0 \
   --warmup_ratio 0.05 \
