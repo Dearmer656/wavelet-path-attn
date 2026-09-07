@@ -15,13 +15,19 @@
 # and showed no benefit (L2048 F1=0.0822, L4096 F1=0.0216 -- both ~= plain RoPE).
 # This checkpoint's own weights were actually adapted via 400 finetune steps at L2048, so
 # this is the real test of whether YaRN's method (not just its frequency formula) helps.
-# yarn_factor = target_length/512 recomputed at each length (matches the zero-shot script's
-# convention) -- at L2048 this reduces to exactly the factor the model was tuned for; at
-# other lengths it's an out-of-distribution extrapolation FROM the L2048 tuning point.
+# 2026-09-07 CORRECTED: yarn_factor is now FIXED at 4.0 (the value the model was actually
+# finetuned under) for EVERY eval length, matching the YaRN paper's own protocol for
+# testing beyond the finetuned length -- the paper evaluates a model finetuned at one
+# target (e.g. 64k) at even longer lengths (128k) using the SAME fixed scale factor, not a
+# freshly-recomputed one per eval length. The original version of this script recomputed
+# yarn_factor=BSIZE/512 at each length (matching the zero-shot script's convention), which
+# conflated pure length extrapolation with an untested frequency-scaling change at every
+# length beyond 2048 -- verified against the paper before fixing this, not assumed.
 # Includes L512 (unlike the zero-shot sweep, which skipped it as a known no-op on the
 # untouched plain checkpoint) since this checkpoint's weights differ from plain Rotary's --
 # worth checking whether YaRN finetuning at L2048 costs anything at the original L512
-# length (catastrophic forgetting check).
+# length (catastrophic forgetting check), now under the SAME frozen yarn_factor=4 the model
+# was trained with (not yarn_factor=1, which would be an untested config at L512 too).
 # Compare against: plain RoPE (eval_rotary_medium_mix_s42_hotpot_alllen.sh) and zero-shot
 # YaRN (eval_rotary_yarn_medium_mix_s42_hotpot_alllen.sh) at the same lengths.
 
@@ -46,7 +52,7 @@ for BSIZE in 512 2048 4096 8192 12288 16384; do
   else
     JSONL="${BASE}/hotpot_long/data/hotpot_long_dev_uniform_${BSIZE}only.jsonl"
   fi
-  YARN_FACTOR=$(python3 -c "print(${BSIZE}/512)")
+  YARN_FACTOR=4
   OUTPUT="${BASE}/hotpot_long/results/rotary_yarn_medium_s42_finetuned2048_ckpt400/L${BSIZE}"
   mkdir -p "${OUTPUT}/log"
   echo "=== Rotary+YaRN medium (genuinely finetuned @2048) s42 HotpotQA-Long L${BSIZE} (yarn_factor=${YARN_FACTOR}) ==="
