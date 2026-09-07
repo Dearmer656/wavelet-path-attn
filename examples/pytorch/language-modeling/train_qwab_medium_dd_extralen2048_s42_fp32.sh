@@ -1,6 +1,6 @@
 #!/bin/bash
-#SBATCH --job-name=QWABYarn2048
-#SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/log_file/train/%j_gpt2_medium_owt_mix_dd_yarn2048_s42_fp32.txt
+#SBATCH --job-name=QWABExtraLen2048
+#SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/log_file/train/%j_qwab_medium_dd_extralen2048_s42_fp32.txt
 #SBATCH --partition=gpu_long
 #SBATCH --gres=gpu:a6000:4
 #SBATCH --time=100:00:00
@@ -41,6 +41,9 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 WORKDIR=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling
 cd "${WORKDIR}"
 PRETRAIN_CKPT="${WORKDIR}/runs/mix_medium_owt_dd_10ep/checkpoint-15000"
+# OUT dir name kept as "dd_yarn2048" (not renamed to match this script's new filename)
+# so this stays pointed at the same output as the already-running job (578366) --
+# renaming it here would orphan that job's in-progress checkpoint into an unreferenced dir.
 OUT="${WORKDIR}/runs/mix_medium_owt_dd_yarn2048_s42_fp32"
 mkdir -p "${OUT}"
 
