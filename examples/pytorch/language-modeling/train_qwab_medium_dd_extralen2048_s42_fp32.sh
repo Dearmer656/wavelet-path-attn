@@ -33,7 +33,10 @@
 # That alone then hit "Expected to have finished reduction in the prior iteration" --
 # gradient checkpointing recomputes forward during backward, which combined with QWAB's
 # conditionally-used wavelet/distillation branches confuses DDP's gradient-ready bucketing;
-# added --ddp_find_unused_parameters True per the error's own suggestion.
+# added --ddp_find_unused_parameters True per the error's own suggestion. That then hit
+# "Expected to mark a variable ready only once" (reused params across reentrant backward
+# passes) -- default reentrant checkpointing doesn't play well with DDP here; switched to
+# --gradient_checkpointing_kwargs '{"use_reentrant": false}' per that error's own suggestion.
 
 set -euxo pipefail
 
@@ -89,6 +92,7 @@ echo "=== QWAB medium (dd headline) extra L2048 finetune (400 steps, matching Ya
   --per_device_eval_batch_size 1 \
   --gradient_accumulation_steps 32 \
   --gradient_checkpointing True \
+  --gradient_checkpointing_kwargs '{"use_reentrant": false}' \
   --ddp_find_unused_parameters True \
   --learning_rate 2e-5 \
   --weight_decay 0.0 \
