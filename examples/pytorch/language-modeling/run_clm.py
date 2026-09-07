@@ -4472,6 +4472,7 @@ def main():
             "wavelet_ctx_feat",
             "rel_use_layer",
             "hotpot_",
+            "_attn_implementation",
         ):
             overridden += force_override_hf_config(config, cfg, _prefix)
         # Also force a single explicit key if present

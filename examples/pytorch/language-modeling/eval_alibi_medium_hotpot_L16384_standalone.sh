@@ -12,12 +12,23 @@
 # L12288 sequentially -- same checkpoint-15000 as that script (not the true final
 # checkpoint-15900) for consistency with the other 5 already-landed lengths in that same
 # sweep.
-# 2026-09-07: eager+bf16 (578723) OOM'd anyway ("Tried to allocate 16.00 GiB" -- eager's
-# O(T^2) attention matrix at T=16384 is the wall, not precision; 578004 hit the same OOM
-# trying L16384 at the end of its own sequential loop). Switched to flash_attention_2,
-# which never materializes the full T x T matrix -- this project already verified ALiBi's
-# eager vs flash_attention_2 forward are numerically equivalent, so this is a memory-only
-# change, not a new untested code path.
+# 2026-09-07: eager+bf16 (578723, and 578804 with --attn_implementation flash_attention_2
+# on the CLI) OOM'd anyway with the exact same "Tried to allocate 16.00 GiB" -- traced this
+# to a real bug: run_clm.py sets `config.attn_implementation` (public attribute) instead of
+# the actual `_attn_implementation` property HF reads, so the CLI flag never took effect;
+# AutoModelForCausalLM.from_pretrained/from_config then auto-resolves the unset
+# _attn_implementation to 'sdpa', which ALiBi's own forward code treats as "not exactly
+# flash_attention_2" and force-routes to eager regardless. Verified via a standalone
+# diagnostic (not assumed) -- confirmed this also means ALiBi's own pretrain (checkpoint-
+# 80000) and finetune (checkpoint-15000/15900) have been running eager the whole time
+# despite being labeled flash_attention_2 throughout the project; existing F1/ppl numbers
+# are still valid (eager computes the same result, just slower), only the "flash" label
+# was wrong.
+# Fix: added "_attn_implementation" to force_override_hf_config's prefix whitelist
+# (run_clm.py, ~line 4474) -- a minimal, additive, backward-compatible change (no existing
+# --cfg_path file references this key, so no other script's behavior changes) -- and set it
+# explicitly via CFG_PATH below, bypassing the broken CLI-flag path entirely for this one
+# invocation.
 
 set -euxo pipefail
 
@@ -38,6 +49,8 @@ BSIZE=16384
 JSONL="${BASE}/hotpot_long/data/hotpot_long_dev_uniform_${BSIZE}only.jsonl"
 OUTPUT="${BASE}/hotpot_long/results/alibi_medium_s42_ckpt15000/L${BSIZE}"
 mkdir -p "${OUTPUT}/log"
+CFG_PATH="${OUTPUT}/supply_model.cfg"
+echo "_attn_implementation=\"flash_attention_2\"" > "${CFG_PATH}"
 echo "=== ALiBi medium (finetuned) s42 HotpotQA-Long L${BSIZE} (standalone) ==="
 MASTER_PORT=$(( 14500 + SLURM_JOB_ID % 10000 ))
 python -m torch.distributed.run --nproc_per_node=2 --master_port=${MASTER_PORT} ./run_clm.py \
@@ -54,6 +67,7 @@ python -m torch.distributed.run --nproc_per_node=2 --master_port=${MASTER_PORT} 
   --per_device_eval_batch_size 1 \
   --output_dir "${OUTPUT}" --overwrite_output_dir \
   --logging_dir "${OUTPUT}/log" \
+  --cfg_path "${CFG_PATH}" \
   --ddp_timeout 21600 --seed 42 --load_best_model_at_end False
 python3 -c "import json; d=json.load(open('${OUTPUT}/eval_results.json')); print(f'ALiBi medium (finetuned) s42 L${BSIZE}: F1={d[\"eval_f1\"]:.4f} eval_loss={d[\"eval_loss\"]:.4f}')"
 
