@@ -2,7 +2,7 @@
 #SBATCH --job-name=alibimed_hp_L16384
 #SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/logs/%j_alibi_medium_s42_L16384_standalone.txt
 #SBATCH --partition=gpu_long
-#SBATCH --gres=gpu:p6000:2
+#SBATCH --gres=gpu:p6000:1
 #SBATCH --nodelist=elm82
 #SBATCH --time=24:00:00
 #SBATCH --ntasks=1
@@ -58,7 +58,7 @@ OUTPUT="${BASE}/hotpot_long/results/alibi_medium_s42_ckpt15000/L${BSIZE}"
 mkdir -p "${OUTPUT}/log"
 echo "=== ALiBi medium (finetuned) s42 HotpotQA-Long L${BSIZE} (standalone, 2000 cases) ==="
 MASTER_PORT=$(( 14500 + SLURM_JOB_ID % 10000 ))
-python -m torch.distributed.run --nproc_per_node=2 --master_port=${MASTER_PORT} ./run_clm.py \
+python -m torch.distributed.run --nproc_per_node=1 --master_port=${MASTER_PORT} ./run_clm.py \
   --model_type gpt2 --tokenizer_name gpt2 \
   --model_name_or_path "${CKPT}" \
   --attn_implementation eager \
