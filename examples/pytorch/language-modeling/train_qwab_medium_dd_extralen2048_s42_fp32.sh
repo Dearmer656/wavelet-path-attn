@@ -25,9 +25,11 @@
 # Batch size matches the Rotary+YaRN L2048 finetune (1/accum, not QWAB's own 4/accum4)
 # since block_size=2048 (4x the original 512) needs the same memory headroom reduction.
 # 2026-09-07: switched 4xa6000(accum16) -> 2xa6000(accum32) per request, global_bs=64
-# unchanged (1*2*32=1*4*16=64). Also OOM'd on 4x3090 (24GB, distill_teacher=wavelet's
-# extra teacher forward pass roughly doubles activation memory vs plain Rotary+YaRN,
-# which has no distillation branch) -- a6000's 48GB has the headroom 3090 didn't.
+# unchanged (1*2*32=1*4*16=64). OOM'd on BOTH 4x3090 (24GB) and 2xa6000 (48GB) at
+# per_device_train_batch_size=1 -- distill_teacher=wavelet's extra teacher forward pass at
+# block_size=2048 needs >48GB even at the minimum batch, well beyond what plain Rotary+YaRN
+# (no distillation branch) required at the same batch/length. Added
+# --gradient_checkpointing True to cut activation memory (trades recompute for memory).
 
 set -euxo pipefail
 
@@ -82,6 +84,7 @@ echo "=== QWAB medium (dd headline) extra L2048 finetune (400 steps, matching Ya
   --per_device_train_batch_size 1 \
   --per_device_eval_batch_size 1 \
   --gradient_accumulation_steps 32 \
+  --gradient_checkpointing True \
   --learning_rate 2e-5 \
   --weight_decay 0.0 \
   --warmup_ratio 0.05 \
