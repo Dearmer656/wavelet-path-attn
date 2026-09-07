@@ -3,13 +3,13 @@
 #SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/gpt2_medium_owt_rotary_80k/train/%j_ppl_quick_ckpt80000.txt
 #SBATCH --partition=gpu_long
 #SBATCH --gres=gpu:a6000:2
-#SBATCH --time=4:00:00
+#SBATCH --time=24:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 
 # Quick extended-length OWT perplexity spot-check for the Rotary GPT-2 medium pretrain's
 # FINAL checkpoint (checkpoint-80000). Mirrors eval_alibi_medium_owt_ckpt60000_ppl_quick.sh
-# exactly (L1024/L2048, 1000-sample cap, eager attention).
+# exactly (L1024/2048/4096/8192/12288/16384, 1000-sample cap).
 
 set -euxo pipefail
 
@@ -28,7 +28,7 @@ BASE=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling
 CKPT="${BASE}/runs/gpt2_medium_owt_rotary_80k/checkpoint-80000"
 cd "${BASE}"
 
-for BSIZE in 1024 2048; do
+for BSIZE in 1024 2048 4096 8192 12288 16384; do
   OUTPUT="${BASE}/runs/gpt2_medium_owt_rotary_80k/ppl_quick_ckpt80000/L${BSIZE}"
   mkdir -p "${OUTPUT}"
   echo "=== rotary medium ckpt80000 ppl @ block_size=${BSIZE} (1000 samples) ==="
@@ -60,4 +60,4 @@ for BSIZE in 1024 2048; do
   python3 -c "import json; d=json.load(open('${OUTPUT}/eval_results.json')); print(f'rotary medium ckpt80000 L${BSIZE} (1000 samples): eval_loss={d[\"eval_loss\"]:.4f} ppl={d[\"perplexity\"]:.2f}')"
 done
 
-echo "=== Done: rotary medium ckpt80000 quick ppl (L1024, L2048, 1000 samples each) ==="
+echo "=== Done: rotary medium ckpt80000 quick ppl (L1024-16384, 1000 samples each; longer lengths may OOM on eager/path_attn at bs=1, watch and adjust if so) ==="

@@ -3,13 +3,13 @@
 #SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/mix_medium_owt_dd_10ep/train/%j_ppl_quick_ckpt15000.txt
 #SBATCH --partition=gpu_long
 #SBATCH --gres=gpu:a6000:2
-#SBATCH --time=4:00:00
+#SBATCH --time=24:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 
 # Quick extended-length OWT perplexity spot-check for QWAB's headline medium checkpoint
 # (mix_medium_owt_dd_10ep/checkpoint-15000, s42). Same protocol as the Rotary/ALiBi/
-# PaTH-only checks (L1024/L2048, 1000-sample cap).
+# PaTH-only checks (L1024/2048/4096/8192/12288/16384, 1000-sample cap).
 # IMPORTANT CAVEAT: unlike the other three checkpoints here (raw OWT pretrains), this
 # checkpoint was FINETUNED on "mix" (HotpotQA + XSum), not OWT -- evaluating it on OWT is
 # an off-distribution check (does the wavelet-augmented, mix-finetuned model still do
@@ -45,7 +45,7 @@ cat "${BASE}/runs/mix_medium_owt_dd_10ep/supply_model.cfg" > "${CFG_PATH}"
 echo "wavelet_ctxscale_scale_max_exp=[14.0, 14.0, 14.0, 14.0, 14.0, 14.0, 14.0, 14.0]" >> "${CFG_PATH}"
 cd "${BASE}"
 
-for BSIZE in 1024 2048; do
+for BSIZE in 1024 2048 4096 8192 12288 16384; do
   OUTPUT="${BASE}/runs/mix_medium_owt_dd_10ep/ppl_quick_ckpt15000/L${BSIZE}"
   mkdir -p "${OUTPUT}"
   echo "=== QWAB medium ckpt15000 ppl @ block_size=${BSIZE} (1000 samples, on OWT -- off-distribution) ==="
@@ -94,4 +94,4 @@ for BSIZE in 1024 2048; do
   python3 -c "import json; d=json.load(open('${OUTPUT}/eval_results.json')); print(f'QWAB medium ckpt15000 L${BSIZE} (1000 samples, OWT): eval_loss={d[\"eval_loss\"]:.4f} ppl={d[\"perplexity\"]:.2f}')"
 done
 
-echo "=== Done: QWAB medium ckpt15000 quick ppl on OWT (L1024, L2048, 1000 samples each) ==="
+echo "=== Done: QWAB medium ckpt15000 quick ppl on OWT (L1024-16384, 1000 samples each; longer lengths may OOM at bs=1, watch and adjust if so) ==="
