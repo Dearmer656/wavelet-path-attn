@@ -2,8 +2,8 @@
 #SBATCH --job-name=qwab_med_scratch_rho256_elm73
 #SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/log_file/train/%j_qwab_medium_owt_pathattn_fromscratch_rho256_80k_elm73_resume10000.txt
 #SBATCH --partition=gpu_long
-#SBATCH --gres=gpu:a6000:4
-#SBATCH --nodelist=elm61
+#SBATCH --gres=gpu:6000:4
+#SBATCH --nodelist=elm73
 #SBATCH --time=100:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
