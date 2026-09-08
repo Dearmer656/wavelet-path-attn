@@ -2,8 +2,7 @@
 #SBATCH --job-name=hp2048_averagehead_ckpt5000
 #SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/logs/%j_averagehead_K1_L512_me18_rho512_nodetach_ckpt5000_hotpot2048.txt
 #SBATCH --partition=gpu_long
-#SBATCH --gres=gpu:q6000:2
-#SBATCH --nodelist=elm26
+#SBATCH --gres=gpu:a6000:2
 #SBATCH --time=24:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4

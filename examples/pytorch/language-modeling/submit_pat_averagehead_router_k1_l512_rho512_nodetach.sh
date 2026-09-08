@@ -11,6 +11,15 @@
 # the full finding), so this had to be started fresh rather than reused from
 # an existing checkpoint. Identical cfg to the per-head sibling except
 # wavelet_ctxscale_router_per_head=false (the only variable changed).
+#
+# GPU: per explicit request, elm26 (q6000x2, idle) instead of waiting for a
+# 4x6000/a6000 node -- per_device_bs dropped 16->8, accum 1->4 to keep
+# global_bs=64 with only 2 GPUs (q6000's VRAM is unconfirmed, likely the
+# standard Quadro RTX 6000 24GB spec rather than elm71/72/73's larger "6000"
+# cards, so kept to the already-proven 24GB-card bs=8 convention rather than
+# risk an OOM). The matching ckpt5000 spot-check eval was moved off elm26 (to
+# unpinned a6000x2) since elm26's 2 GPUs are now fully occupied by this
+# training job itself.
 
 set -euo pipefail
 
@@ -55,7 +64,8 @@ cat > "${TRAIN_SH}" <<EOF
 #SBATCH --job-name=PAT_${TAG}
 #SBATCH --output=${RUN_OUT}/train/%j_${TAG}_train_eval.txt
 #SBATCH --partition=gpu_long
-#SBATCH --gres=gpu:6000:4
+#SBATCH --gres=gpu:q6000:2
+#SBATCH --nodelist=elm26
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --time=100:00:00
@@ -119,7 +129,7 @@ wavelet_router_norm_mode="rms_joint"
 wavelet_router_tau_null_init=1.0
 wavelet_router_tau_scale_init=1.0
 CFG
-python -m torch.distributed.run --nproc_per_node=4 --master_port="\${MASTER_PORT}" ./run_clm.py --model_type gpt2 --tokenizer_name gpt2 --config_name gpt2 --share_freq_across_heads True --learning_rate 1e-4 --weight_decay 0.0 --per_device_train_batch_size 16 --per_device_eval_batch_size 16 --gradient_accumulation_steps 1 --block_size 512 --dataset_name mix --do_train --eval_strategy no --logging_dir "\${RUN_OUT}/train_log" --logging_steps 500 --num_train_epochs 10 --num_harmonics 1 --wavelet_pe_softmax_use False --save_steps 2500 --attn_implementation path_attn --path_use_qk_norm false --path_use_low_rank_w true --path_use_w_shortconv false --path_conv_size 3 --warmup_ratio 0.05 --path_conv_bias false --output_dir "\${RUN_OUT}" --overwrite_output_dir --b_unfreeze_step 5000 --pe_method no_pe --single_A_B True --use_beta_modulation False --use_soft_wavelet_fox False --wavelet_mode logit_bias_ctxscale_shift_v0 --bias_type wavelet --model_name_or_path runs/1r_baseline_from_s/checkpoint-80000 --full_fine_tune False --wavelet_baseline_use False --init_theta 0.847 --use_forget_gate False --sample_num 16 --spectral_loss_coe 0.1 --temp_loss_coe 0.0 --distill_teacher wavelet --distill_in_which_layers 0 --distill_freq_scale 25 --smooth_use False --distilling_coe_warmup_use False --scale_range 0 16 --weight_alpha 0.0 --loss_type cos --qk_rotation False --wavelet_router False --router_band_num 8 --router_hidden_dim 32 --rel_selection all --cfg_path "\${RUN_OUT}/supply_model.cfg" --seed 42
+python -m torch.distributed.run --nproc_per_node=2 --master_port="\${MASTER_PORT}" ./run_clm.py --model_type gpt2 --tokenizer_name gpt2 --config_name gpt2 --share_freq_across_heads True --learning_rate 1e-4 --weight_decay 0.0 --per_device_train_batch_size 8 --per_device_eval_batch_size 8 --gradient_accumulation_steps 4 --block_size 512 --dataset_name mix --do_train --eval_strategy no --logging_dir "\${RUN_OUT}/train_log" --logging_steps 500 --num_train_epochs 10 --num_harmonics 1 --wavelet_pe_softmax_use False --save_steps 2500 --attn_implementation path_attn --path_use_qk_norm false --path_use_low_rank_w true --path_use_w_shortconv false --path_conv_size 3 --warmup_ratio 0.05 --path_conv_bias false --output_dir "\${RUN_OUT}" --overwrite_output_dir --b_unfreeze_step 5000 --pe_method no_pe --single_A_B True --use_beta_modulation False --use_soft_wavelet_fox False --wavelet_mode logit_bias_ctxscale_shift_v0 --bias_type wavelet --model_name_or_path runs/1r_baseline_from_s/checkpoint-80000 --full_fine_tune False --wavelet_baseline_use False --init_theta 0.847 --use_forget_gate False --sample_num 16 --spectral_loss_coe 0.1 --temp_loss_coe 0.0 --distill_teacher wavelet --distill_in_which_layers 0 --distill_freq_scale 25 --smooth_use False --distilling_coe_warmup_use False --scale_range 0 16 --weight_alpha 0.0 --loss_type cos --qk_rotation False --wavelet_router False --router_band_num 8 --router_hidden_dim 32 --rel_selection all --cfg_path "\${RUN_OUT}/supply_model.cfg" --seed 42
 [ -d "\${RUN_OUT}/checkpoint-15000" ] || { echo "Missing final checkpoint" >&2; exit 1; }
 bash "${TEST_SH}"
 EOF
@@ -127,4 +137,4 @@ EOF
 chmod +x "${TRAIN_SH}" "${TEST_SH}"
 bash -n "${TRAIN_SH}"; bash -n "${TEST_SH}"
 JID=$(sbatch --parsable "${TRAIN_SH}")
-echo "submitted ${TAG} job=${JID} (queued, 6000x4, no nodelist pin)"
+echo "submitted ${TAG} job=${JID} (elm26, q6000x2)"
