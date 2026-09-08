@@ -154,4 +154,4 @@ EOF
 chmod +x "${TRAIN_SH}" "${TEST_SH}"
 bash -n "${TRAIN_SH}"; bash -n "${TEST_SH}"
 JID=$(sbatch --parsable "${TRAIN_SH}")
-echo "submitted ${TAG} job=${JID} (elm54, 3090x4)"
+echo "submitted ${TAG} job=${JID} (elm66, a6000x4)"
