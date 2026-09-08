@@ -2,7 +2,7 @@
 #SBATCH --job-name=hp2048_perheadrouter_ckpt5000
 #SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/logs/%j_perheadrouter_K1_L512_me18_rho512_nodetach_ckpt5000_hotpot2048.txt
 #SBATCH --partition=gpu_long
-#SBATCH --gres=gpu:6000:2
+#SBATCH --gres=gpu:q6000:2
 #SBATCH --nodelist=elm26
 #SBATCH --time=24:00:00
 #SBATCH --ntasks=1
