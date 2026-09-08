@@ -24,24 +24,35 @@
 # x_feat's shape between the fixed guard and the final write.
 #
 # Same optimal-setting cfg as submit_pat244_k1_l512_peak_bracket.sh (rms_joint
-# router norm, with_null mode at K=1, multiscale_norm=rms, disable_layer_gate,
-# wavelet_ctx_feat_detach_delta) -- rho=512 is the known K1/L512 peak
-# (scale_max_exp=18.0, F1=0.7368 under the head-shared baseline), chosen here
-# so this run is a direct per-head-vs-head-shared comparison at the same scale,
-# not confounded by also changing rho.
+# router norm, with_null mode at K=1, multiscale_norm=rms, disable_layer_gate)
+# EXCEPT wavelet_ctx_feat_detach_delta=false (not the template's true) -- kept
+# explicit per user's stated preference that QWAB and the PaTH backbone should
+# co-adapt (gradient flows into the backbone through the router/shift feature
+# paths too), not train QWAB on top of a gradient-isolated backbone. Surfaced
+# a broader finding while checking this: essentially all PAT-225/234/244
+# small-model results (152 of ~156 checked scripts, including this template
+# and its rho=512 K1/L512 peak F1=0.7368) use detach_delta=true; only 2
+# "_nodetach" scripts on small model ever tested the joint variant. Medium's
+# from-scratch pretrains (579696/579699) and its main dd_10ep/extralen finetune
+# family default to joint already (never set this flag) -- so joint update is
+# already medium's real behavior, but is a deliberate DEVIATION from small
+# model's usual convention here, not a comparison against F1=0.7368 (that
+# number is detach-mode; this run is joint-mode, not directly comparable).
+# Tag renamed with _nodetach suffix to keep separate results directories.
 #
 # GPU: elm71/72/73 (6000x4, the template's usual gres) are all busy with other
 # QWAB medium pretrains right now. Initially routed to elm54 (3090x4, idle),
 # bs=8/accum=2 (3090's 24GB can't fit the template's bs=16/accum=1). Per
 # explicit request, moved to elm66 (a6000x4, idle) instead for speed -- a6000's
 # 48GB matches the 6000's memory budget, so restored bs=16/accum=1 (global_bs=64
-# unchanged either way). Cancelled and restarted from step 0 (only 370/15900
-# steps had completed on elm54).
+# unchanged either way). Restarted from step 0 twice: once for the node move,
+# once for this detach->nodetach config fix (14min/~600 steps had run under
+# detach=true on elm66 before this fix).
 
 set -euo pipefail
 
 WORKDIR="/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling"
-TAG="perheadrouter_K1_L512_me18_rho512"
+TAG="perheadrouter_K1_L512_me18_rho512_nodetach"
 RUN_OUT="${WORKDIR}/runs/pat244_dual_temp/${TAG}"
 mkdir -p "${RUN_OUT}/train"
 
@@ -134,7 +145,7 @@ wavelet_router_chunk_align="left"
 wavelet_router_chunk_share=true
 wavelet_ctxscale_disable_layer_gate=true
 wavelet_router_sigmoid_mode="with_null"
-wavelet_ctx_feat_detach_delta=true
+wavelet_ctx_feat_detach_delta=false
 wavelet_ctxscale_router_per_head=true
 wavelet_ctxscale_k=1
 wavelet_ctxscale_scale_max_exp=18.0
