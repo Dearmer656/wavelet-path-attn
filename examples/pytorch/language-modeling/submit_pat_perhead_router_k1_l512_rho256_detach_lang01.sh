@@ -54,8 +54,8 @@ cat > "${TRAIN_SH}" <<EOF
 #SBATCH --job-name=PAT_${TAG}
 #SBATCH --output=${RUN_OUT}/train/%j_${TAG}_train_eval.txt
 #SBATCH --partition=gpu_long
-#SBATCH --gres=gpu:6000:4
-#SBATCH --nodelist=elm71
+#SBATCH --gres=gpu:a6000:4
+#SBATCH --nodelist=elm65
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --time=100:00:00
@@ -127,4 +127,4 @@ EOF
 chmod +x "${TRAIN_SH}" "${TEST_SH}"
 bash -n "${TRAIN_SH}"; bash -n "${TEST_SH}"
 JID=$(sbatch --parsable "${TRAIN_SH}")
-echo "submitted ${TAG} job=${JID} (elm71, 6000x4, queued behind 579699)"
+echo "submitted ${TAG} job=${JID} (elm65, a6000x4, idle)"
