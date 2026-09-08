@@ -24,10 +24,18 @@ cd "/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling"
 # against for this checkpoint family.
 for BLOCK_SIZE in 512 2048 4096; do
   OUTPUT_DIR="/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/results_uniform/perheadrouter_K1_L512_me18_rho512_detach_ckpt15000/L${BLOCK_SIZE}"
+  if [ -f "${OUTPUT_DIR}/eval_results.json" ]; then
+    echo "=== Skipping L${BLOCK_SIZE}, already has eval_results.json ==="
+    continue
+  fi
   mkdir -p "${OUTPUT_DIR}"
   MASTER_PORT=$((12000 + SLURM_JOB_ID % 10000 + BLOCK_SIZE % 100))
-  echo "=== perheadrouter_K1_L512_me18_rho512_detach ckpt15000 L${BLOCK_SIZE} ==="
-  /cl/work5/hongyu-s/conda/envs/latest_transformers/bin/torchrun --nproc_per_node=2 --master_port=${MASTER_PORT} ./run_clm.py --model_type gpt2 --tokenizer_name gpt2 --model_name_or_path "${CHECKPOINT}" --attn_implementation path_attn --cfg_path "${CFG_PATH}" --dataset_name hotpot_qa --dataset_config_name distractor --hotpot_long_jsonl "${JSONL}" --hotpot_long_lengths ${BLOCK_SIZE} --do_eval --block_size ${BLOCK_SIZE} --per_device_eval_batch_size 2 --path_attn_impl pytorch --report_to none --output_dir "${OUTPUT_DIR}" --overwrite_output_dir --logging_dir "${OUTPUT_DIR}/log" --seed 42 --path_use_qk_norm false --path_use_low_rank_w true --path_use_w_shortconv false --path_conv_size 3 --path_conv_bias false --num_harmonics 1 --single_A_B True --use_beta_modulation False --use_soft_wavelet_fox False --wavelet_baseline_use False --use_forget_gate False --qk_rotation False --ablate_switch False --wavelet_router False --load_best_model_at_end False
+  # L4096's O(T^2)-ish wavelet ctxscale bias tensors OOM'd a6000's 48GB at bs=2
+  # (job 581000/581002); dropped to bs=1 for that length only.
+  EVAL_BS=2
+  if [ "${BLOCK_SIZE}" -ge 4096 ]; then EVAL_BS=1; fi
+  echo "=== perheadrouter_K1_L512_me18_rho512_detach ckpt15000 L${BLOCK_SIZE} (bs=${EVAL_BS}) ==="
+  /cl/work5/hongyu-s/conda/envs/latest_transformers/bin/torchrun --nproc_per_node=2 --master_port=${MASTER_PORT} ./run_clm.py --model_type gpt2 --tokenizer_name gpt2 --model_name_or_path "${CHECKPOINT}" --attn_implementation path_attn --cfg_path "${CFG_PATH}" --dataset_name hotpot_qa --dataset_config_name distractor --hotpot_long_jsonl "${JSONL}" --hotpot_long_lengths ${BLOCK_SIZE} --do_eval --block_size ${BLOCK_SIZE} --per_device_eval_batch_size ${EVAL_BS} --path_attn_impl pytorch --report_to none --output_dir "${OUTPUT_DIR}" --overwrite_output_dir --logging_dir "${OUTPUT_DIR}/log" --seed 42 --path_use_qk_norm false --path_use_low_rank_w true --path_use_w_shortconv false --path_conv_size 3 --path_conv_bias false --num_harmonics 1 --single_A_B True --use_beta_modulation False --use_soft_wavelet_fox False --wavelet_baseline_use False --use_forget_gate False --qk_rotation False --ablate_switch False --wavelet_router False --load_best_model_at_end False
   echo "=== Done: L${BLOCK_SIZE} ==="
 done
 
