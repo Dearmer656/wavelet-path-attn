@@ -51,8 +51,8 @@ cat > "${TRAIN_SH}" <<EOF
 #SBATCH --job-name=PAT_${TAG}
 #SBATCH --output=${RUN_OUT}/train/%j_${TAG}_train_eval.txt
 #SBATCH --partition=gpu_long
-#SBATCH --gres=gpu:a6000:4
-#SBATCH --nodelist=elm67
+#SBATCH --gres=gpu:6000:4
+#SBATCH --nodelist=elm73
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --time=100:00:00
