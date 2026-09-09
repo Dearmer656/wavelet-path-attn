@@ -2,7 +2,8 @@
 #SBATCH --job-name=QWABExtraLen2048
 #SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/log_file/train/%j_qwab_medium_dd_extralen2048_s42_fp32.txt
 #SBATCH --partition=gpu_long
-#SBATCH --gres=gpu:p6000:2
+#SBATCH --gres=gpu:6000:2
+#SBATCH --nodelist=elm71
 #SBATCH --time=100:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
