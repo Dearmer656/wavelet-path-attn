@@ -18,5 +18,5 @@ make_chart(
     series=series,
     ylim=(0.595, 0.79),
     yticks=[0.60,0.62,0.64,0.66,0.68,0.70,0.72,0.74,0.76,0.78],
-    out_path="/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/paper_results/scale_sweep_charts/hotpot_scale_sweep.pdf"
+    out_path="/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/paper_results/scale_sweep_charts/small_hotpot_scale_sweep.pdf"
 )
