@@ -38,10 +38,10 @@ def make_chart(title, ylabel, x_labels, series, ylim, yticks, out_path, source_n
         max_name, max_color, max_val = max(at_len, key=lambda t: t[2])
         min_name, min_color, min_val = min(at_len, key=lambda t: t[2])
 
-        ax.annotate(f"{max_val:.4f}", xy=(i, max_val), xytext=(0, 14),
+        ax.annotate(f"{max_val * 100:.2f}%", xy=(i, max_val), xytext=(0, 14),
                     textcoords="offset points", ha="center", va="bottom",
                     fontsize=12, color=max_color, fontweight="bold")
-        ax.annotate(f"{min_val:.4f}", xy=(i, min_val), xytext=(0, -14),
+        ax.annotate(f"{min_val * 100:.2f}%", xy=(i, min_val), xytext=(0, -14),
                     textcoords="offset points", ha="center", va="top",
                     fontsize=12, color=min_color, fontweight="bold")
 
