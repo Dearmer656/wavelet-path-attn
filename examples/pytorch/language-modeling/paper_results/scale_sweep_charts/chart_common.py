@@ -49,6 +49,7 @@ def make_chart(title, ylabel, x_labels, series, ylim, yticks, out_path, source_n
     ax.set_xticklabels(x_labels, fontsize=15)
     ax.set_ylim(*ylim)
     ax.set_yticks(yticks)
+    ax.set_yticklabels([f"{v * 100:.0f}" for v in yticks])
     ax.set_ylabel(ylabel, fontsize=16, color="#1a1d24")
     ax.set_xlabel("Evaluation Length", fontsize=16, color="#1a1d24", labelpad=10)
     ax.set_title(title, fontsize=19, color="#1a1d24", pad=16)
