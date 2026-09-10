@@ -26,6 +26,14 @@
 # same default both runs share; confirmed by reading 581523's actual on-disk cfg file
 # before writing this one, not assumed from memory.
 # GPU: a6000x4 per explicit request (distinct from 581523's elm73 6000x4, no node overlap).
+#
+# 2026-09-10: bs=8/accum=2 (581523's own budget) OOM'd immediately on all 4 GPUs at step 1
+# ("Tried to allocate 786.00 MiB" with 46.64GB already in use). Root cause: the per-head
+# router keeps the full head axis through path_attn.py's K-loop (bias_chunk/eff_chunk
+# become [B,H,q_len,T] instead of head-shared's [B,q_len,T]) -- for medium's 16 attention
+# heads this multiplies the relevant intermediate tensors by roughly that factor, on top of
+# the wavelet branch's already-non-O(T) memory profile (see the rho=128/256 from-scratch
+# scripts' own bs=16->bs=8 OOM history). Dropped to bs=2/accum=8 (global_bs=64 unchanged).
 
 set -euxo pipefail
 
@@ -74,9 +82,9 @@ echo "=== QWAB medium PER-HEAD FROM-SCRATCH OWT pretrain, rho=256, nodetach(defa
   --max_steps 80000 \
   --eval_strategy no \
   --save_steps 10000 \
-  --per_device_train_batch_size 8 \
-  --per_device_eval_batch_size 8 \
-  --gradient_accumulation_steps 2 \
+  --per_device_train_batch_size 2 \
+  --per_device_eval_batch_size 2 \
+  --gradient_accumulation_steps 8 \
   --learning_rate 1e-4 \
   --weight_decay 0.01 \
   --warmup_ratio 0.05 \
