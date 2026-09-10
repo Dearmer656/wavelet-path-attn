@@ -82,9 +82,9 @@ echo "=== QWAB medium PER-HEAD FROM-SCRATCH OWT pretrain, rho=256, nodetach(defa
   --max_steps 80000 \
   --eval_strategy no \
   --save_steps 10000 \
-  --per_device_train_batch_size 8 \
-  --per_device_eval_batch_size 8 \
-  --gradient_accumulation_steps 2 \
+  --per_device_train_batch_size 4 \
+  --per_device_eval_batch_size 4 \
+  --gradient_accumulation_steps 4 \
   --learning_rate 1e-4 \
   --weight_decay 0.01 \
   --warmup_ratio 0.05 \
