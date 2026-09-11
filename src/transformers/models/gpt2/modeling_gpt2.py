@@ -39,6 +39,7 @@ from ...modeling_outputs import (
     TokenClassifierOutput,
 )
 from ...modeling_utils import ALL_ATTENTION_FUNCTIONS, PreTrainedModel
+from ...modeling_rope_utils import _compute_yarn_parameters
 from ...pytorch_utils import Conv1D, find_pruneable_heads_and_indices, prune_conv1d_layer
 from ...utils import (
     ModelOutput,
@@ -50,6 +51,7 @@ from ...utils import (
 from ...utils.deprecation import deprecate_kwarg
 from ...utils.model_parallel_utils import assert_device_map, get_device_map
 from .configuration_gpt2 import GPT2Config
+from types import SimpleNamespace
 
 
 from einops import rearrange
@@ -72,6 +74,30 @@ except Exception:
     pass
 # from fla.layers.path_attn import PaTHAttention as _PaTHAttention
 logger = logging.get_logger(__name__)
+
+
+def _apply_yarn_to_rotary_embedding(config, rotary_emb):
+    yarn_factor = float(getattr(config, "yarn_factor", 4.0))
+    yarn_original_max_position_embeddings = getattr(
+        config, "yarn_original_max_position_embeddings", getattr(config, "block_size", 512)
+    )
+    rope_config = SimpleNamespace(
+        rope_theta=float(getattr(config, "rope_theta", 10000)),
+        hidden_size=int(config.hidden_size),
+        num_attention_heads=int(config.num_attention_heads),
+        max_position_embeddings=int(yarn_original_max_position_embeddings * yarn_factor),
+        rope_scaling={
+            "factor": yarn_factor,
+            "beta_fast": float(getattr(config, "yarn_beta_fast", 32)),
+            "beta_slow": float(getattr(config, "yarn_beta_slow", 1)),
+            "original_max_position_embeddings": int(yarn_original_max_position_embeddings),
+            "attention_factor": getattr(config, "yarn_attention_factor", None),
+            "truncate": bool(getattr(config, "yarn_truncate", True)),
+        },
+    )
+    inv_freq, attention_factor = _compute_yarn_parameters(rope_config, device=rotary_emb.freqs.device)
+    rotary_emb.freqs.data.copy_(inv_freq.to(device=rotary_emb.freqs.device, dtype=rotary_emb.freqs.dtype))
+    return float(attention_factor)
 
 class PWavMeanLogger:
     """One-shot logger for per-layer P_wav mean heatmaps."""
@@ -370,22 +396,24 @@ def eager_attention_forward(module, query, key, value, attention_mask, head_mask
     attn_weights = torch.matmul(query, key.transpose(-1, -2))
 
     # Wavelet relative position bias (pe_method='wavelet', relative_type='4')
+    # Added IN PLACE (see _add_wavelet_relative_bias_'s docstring) -- avoids a
+    # second/third full [B,H,q_len,k_len]-sized tensor alongside attn_weights,
+    # which at long context length is the difference between fitting on a
+    # single 48GB-class GPU and OOMing.
     wavelet_rel_buf = kwargs.get("wavelet_relative_tensor", None)
     if wavelet_rel_buf is not None:
-        q_len = query.size(-2)
         k_len = key.size(-2)
-        if hasattr(module, "_get_wavelet_relative_tensor"):
-            W = module._get_wavelet_relative_tensor(
-                q_len=q_len,
+        if hasattr(module, "_add_wavelet_relative_bias_"):
+            module._add_wavelet_relative_bias_(
+                attn_weights,
+                query=query,
                 k_len=k_len,
-                device=query.device,
-                dtype=query.dtype,
                 base_tensor=wavelet_rel_buf,
             )
         else:
+            q_len = query.size(-2)
             W = wavelet_rel_buf[:, :q_len, :k_len].to(device=query.device, dtype=query.dtype)  # [D, q_len, k_len]
-        rel = torch.einsum("bhld,dln->bhln", query, W)
-        attn_weights = attn_weights + rel
+            attn_weights.add_(torch.einsum("bhld,dln->bhln", query, W))
 
     if module.scale_attn_weights:
         attn_weights = attn_weights / torch.full(
@@ -420,7 +448,10 @@ def eager_attention_forward(module, query, key, value, attention_mask, head_mask
         # if only "normal" attention layer implements causal mask
         query_length, key_length = query.size(-2), key.size(-2)
         if module.bias.size(-1) >= key_length:
-            causal_mask = module.bias[:, :, key_length - query_length : key_length, :key_length]
+            # .to(attn_weights.device): under head-tensor-parallelism (config.head_tp_size>1)
+            # attn_weights lives on a per-shard device that may differ from module.bias's
+            # (the module's own parameter/buffer device); a no-op .to() otherwise.
+            causal_mask = module.bias[:, :, key_length - query_length : key_length, :key_length].to(attn_weights.device)
         else:
             # Fallback for long-context eval where key_length exceeds the precomputed bias buffer.
             causal_mask = torch.tril(
@@ -739,6 +770,9 @@ class GPT2Attention(nn.Module):
         self.is_causal = True
         if config.pe_method == 'rotary':
             self.rotary_emb = RotaryEmbedding(dim=self.head_dim, theta=getattr(config, 'rope_theta', 10000))
+            self.yarn_attention_factor = None
+            if getattr(config, 'use_yarn', False):
+                self.yarn_attention_factor = _apply_yarn_to_rotary_embedding(config, self.rotary_emb)
 
         # Wavelet relative PE: precompute (head_dim, block_size, block_size) buffer
         if config.pe_method == 'wavelet' and getattr(config, 'relative_type', None) == '4':
@@ -816,29 +850,72 @@ class GPT2Attention(nn.Module):
 
         self.pruned_heads = set()
 
-    def _get_wavelet_relative_tensor(
+    def _add_wavelet_relative_bias_(
         self,
-        q_len: int,
+        attn_weights: torch.Tensor,
+        query: torch.Tensor,
         k_len: int,
-        device: torch.device,
-        dtype: torch.dtype,
         base_tensor: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
+    ) -> None:
+        """Add the query-conditioned Ricker-wavelet relative-position bias into
+        `attn_weights` IN PLACE (`attn_weights` is [B,H,q_len,k_len] and is
+        mutated directly — nothing is returned).
+
+        Numerically equivalent to ``attn_weights += einsum('bhld,dln->bhln', query, W)``
+        where ``W[d,i,j] = (1-u^2)*exp(-0.5*u^2)``, ``u = (i-j)/scale_d - shift_d``,
+        for ``i in [0,q_len)``, ``j in [0,k_len)`` — but neither W nor the full
+        [B,H,q_len,k_len] bias term is ever materialized as its own tensor.
+        W[d,i,j] depends only on the relative offset ``r=i-j`` (Toeplitz
+        structure), so the wavelet formula is only evaluated once per unique
+        offset (O(D*(q_len+k_len)) instead of O(D*q_len*k_len)), and the
+        [D,q_len,k_len] expansion needed for the einsum with `query` is built
+        and consumed (added straight into `attn_weights`, in place) one
+        query-chunk at a time (size `wavelet_pe_chunk_q`, default 256).
+        Adding in place instead of returning a separate full-size tensor for
+        the caller to add avoids a second (and, transiently, third — for the
+        non-in-place `+`) [B,H,q_len,k_len]-sized allocation on top of
+        `attn_weights` itself: at L=16384 with 16 heads that tensor alone is
+        ~17GB, so a naive `attn_weights = attn_weights + rel` can transiently
+        need ~3x that (attn_weights, rel, and the new sum) right at the point
+        a single 48GB-class GPU has no headroom left for.
+        See arXiv:2502.02004 Appendix A.6 for the same (d,length,length) ->
+        (d,length) memory reduction on the reference WRP implementation,
+        which the chunking here mirrors via gather instead of their
+        torch.scatter.
+        """
+        device, dtype = query.device, query.dtype
+        q_len = query.size(-2)
+
         rel_buf = self.wavelet_relative_tensor if base_tensor is None else base_tensor
         if rel_buf is not None and rel_buf.size(1) >= q_len and rel_buf.size(2) >= k_len:
-            return rel_buf[:, :q_len, :k_len].to(device=device, dtype=dtype)
+            W = rel_buf[:, :q_len, :k_len].to(device=device, dtype=dtype)  # [D, q_len, k_len]
+            attn_weights.add_(torch.einsum("bhld,dln->bhln", query, W))
+            return
 
         if self.wavelet_scales is None or self.wavelet_shifts is None:
             raise RuntimeError("wavelet_scales/wavelet_shifts are required for dynamic wavelet relative tensor.")
 
-        i_idx = torch.arange(q_len, dtype=dtype, device=device).unsqueeze(1)  # [q_len, 1]
-        j_idx = torch.arange(k_len, dtype=dtype, device=device).unsqueeze(0)  # [1, k_len]
-        delta = (i_idx - j_idx).unsqueeze(0)  # [1, q_len, k_len]
+        scales = self.wavelet_scales.to(device=device, dtype=dtype)  # [D]
+        shifts = self.wavelet_shifts.to(device=device, dtype=dtype)  # [D]
 
-        scales = self.wavelet_scales.to(device=device, dtype=dtype).view(-1, 1, 1)  # [D,1,1]
-        shifts = self.wavelet_shifts.to(device=device, dtype=dtype).view(-1, 1, 1)  # [D,1,1]
-        u = delta / scales - shifts
-        return (1.0 - u * u) * torch.exp(-0.5 * u * u)
+        # delta = i - j ranges over [-(k_len-1), q_len-1] -> q_len+k_len-1 unique values.
+        offset_min = -(k_len - 1)
+        offset_max = q_len - 1
+        r = torch.arange(offset_min, offset_max + 1, dtype=dtype, device=device)  # [n_offsets]
+        u1d = r.unsqueeze(0) / scales.unsqueeze(1) - shifts.unsqueeze(1)  # [D, n_offsets]
+        w1d = (1.0 - u1d * u1d) * torch.exp(-0.5 * u1d * u1d)  # [D, n_offsets]
+
+        chunk_q = int(getattr(self.config, "wavelet_pe_chunk_q", 256))
+        chunk_q = max(1, min(chunk_q, q_len))
+
+        j_idx = torch.arange(k_len, device=device)  # [k_len]
+        for q0 in range(0, q_len, chunk_q):
+            q1 = min(q0 + chunk_q, q_len)
+            i_idx = torch.arange(q0, q1, device=device)  # [cq]
+            offset_idx = (i_idx.unsqueeze(1) - j_idx.unsqueeze(0)) - offset_min  # [cq, k_len], long
+            W_chunk = w1d[:, offset_idx.reshape(-1)].reshape(w1d.size(0), offset_idx.size(0), offset_idx.size(1))
+            rel_chunk = torch.einsum("bhld,dln->bhln", query[..., q0:q1, :], W_chunk)  # [B,H,cq,k_len]
+            attn_weights[..., q0:q1, :].add_(rel_chunk)
 
     def prune_heads(self, heads):
         if len(heads) == 0:
@@ -997,6 +1074,9 @@ class GPT2Attention(nn.Module):
         if self.config.pe_method == 'rotary':
             query_states = self.rotary_emb.rotate_queries_or_keys(query_states)
             key_states = self.rotary_emb.rotate_queries_or_keys(key_states)
+            if getattr(self, 'yarn_attention_factor', None) is not None:
+                query_states = query_states * self.yarn_attention_factor
+                key_states = key_states * self.yarn_attention_factor
             # query_states = query_states.permute(0, 2, 1, 3)
             # key_states = key_states.permute(0, 2, 1, 3)
         # QWAB bias for Rotary PE (computed from hidden_states, no path-attention dependency)
@@ -1121,21 +1201,74 @@ class GPT2Attention(nn.Module):
                     _path_logits = (_E_base * (_D ** -0.5)).to(torch.float32)
                     wavelet_rel_kwarg['_path_logits'] = _path_logits
                     wavelet_rel_kwarg['_path_lam'] = _lam_eff
-            attn_output, attn_weights = attention_interface(
-                self,
-                query_states,
-                key_states,
-                value_states,
-                attention_mask,
-                head_mask=head_mask,
-                dropout=self.attn_dropout.p if self.training else 0.0,
-                is_causal=is_causal,
-                wavelet_decay_table=wavelet_decay_table,
-                router=router1,
-                qwab_bias=_qwab_bias,
-                **wavelet_rel_kwarg,
-                **kwargs,
-            )
+            head_tp_size = int(getattr(self.config, "head_tp_size", 1))
+            if head_tp_size > 1:
+                # Single-process, multi-GPU head-tensor-parallelism: split the attention
+                # heads across `head_tp_size` local CUDA devices (cuda:0..head_tp_size-1)
+                # so each device only ever materializes the O(H_local, T, T)-sized
+                # attn_weights / wavelet-bias tensors for its own slice of heads, instead
+                # of the full O(H, T, T) on one device. This is plain per-shard device
+                # placement (no torch.distributed) precisely so it slots into the existing
+                # single-process eval loop unchanged -- no interaction with the Trainer's
+                # DDP data-sharding/prediction-gathering, which assumes disjoint data per
+                # rank and would otherwise have to be bypassed. c_attn/c_proj and every
+                # other per-token op still run once, in full, on the primary device;
+                # only the O(H,T,T)-scaling attention core is sharded.
+                if self.num_heads % head_tp_size != 0:
+                    raise ValueError(
+                        f"num_heads={self.num_heads} not divisible by head_tp_size={head_tp_size}."
+                    )
+                _primary_device = query_states.device
+                _heads_per_shard = self.num_heads // head_tp_size
+                _shard_outputs = []
+                for _shard in range(head_tp_size):
+                    _dev = torch.device(f"cuda:{_shard}")
+                    _h0 = _shard * _heads_per_shard
+                    _h1 = _h0 + _heads_per_shard
+                    _q_i = query_states[:, _h0:_h1].to(_dev, non_blocking=True)
+                    _k_i = key_states[:, _h0:_h1].to(_dev, non_blocking=True)
+                    _v_i = value_states[:, _h0:_h1].to(_dev, non_blocking=True)
+                    _mask_i = attention_mask.to(_dev, non_blocking=True) if attention_mask is not None else None
+                    if head_mask is not None:
+                        _hm_i = (head_mask[_h0:_h1] if head_mask.dim() == 1 else head_mask[:, _h0:_h1]).to(_dev)
+                    else:
+                        _hm_i = None
+                    _out_i, _ = attention_interface(
+                        self,
+                        _q_i,
+                        _k_i,
+                        _v_i,
+                        _mask_i,
+                        head_mask=_hm_i,
+                        dropout=self.attn_dropout.p if self.training else 0.0,
+                        is_causal=is_causal,
+                        wavelet_decay_table=wavelet_decay_table,
+                        router=router1,
+                        qwab_bias=_qwab_bias,
+                        **wavelet_rel_kwarg,
+                        **kwargs,
+                    )
+                    # attn_output_i: [B, T, heads_per_shard, head_dim]; move back to the
+                    # primary device immediately so no shard's tensor lingers elsewhere.
+                    _shard_outputs.append(_out_i.to(_primary_device, non_blocking=True))
+                attn_output = torch.cat(_shard_outputs, dim=2)  # [B, T, num_heads, head_dim]
+                attn_weights = None
+            else:
+                attn_output, attn_weights = attention_interface(
+                    self,
+                    query_states,
+                    key_states,
+                    value_states,
+                    attention_mask,
+                    head_mask=head_mask,
+                    dropout=self.attn_dropout.p if self.training else 0.0,
+                    is_causal=is_causal,
+                    wavelet_decay_table=wavelet_decay_table,
+                    router=router1,
+                    qwab_bias=_qwab_bias,
+                    **wavelet_rel_kwarg,
+                    **kwargs,
+                )
         attn_output = attn_output.reshape(*attn_output.shape[:-2], -1).contiguous()
         attn_output = self.c_proj(attn_output)
         attn_output = self.resid_dropout(attn_output)

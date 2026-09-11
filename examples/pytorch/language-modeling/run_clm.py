@@ -798,10 +798,14 @@ class SupplyTrainingArguments(TrainingArguments):
         },
     )
     path_blend_layers: list[int] = field(
-        default_factory=lambda: [5, 6],
+        default_factory=list,
         metadata={
             "help": ("Layer indices that use PaTH logit blending (e.g. --path_blend_layers 0 1). "
-                     "Default [5, 6] per PAT-100 spec."),
+                     "Opt-in only (default empty) -- PAT-100 is a separate research mechanism from "
+                     "whatever pe_method/baseline is being trained, and must not silently attach to "
+                     "runs that never asked for it (e.g. it has no place in the WRP external-baseline "
+                     "eval, which should be pure pe_method=wavelet with zero PaTH coupling). Pass "
+                     "explicit layer indices (see train_pat105_*.sh) to opt in."),
         },
     )
     path_sparse_gate: bool = field(
@@ -5108,6 +5112,25 @@ def main():
                 for _, module in model.named_modules():
                     if hasattr(module, "coe_for_rel") and isinstance(getattr(module, "coe_for_rel"), torch.nn.Parameter):
                         module.coe_for_rel.fill_(float(config.coe_for_rel_init))
+        # PaTHAttention._capture_debug_tensors (default True, read via getattr
+        # inside fla/layers/path_attn.py, never set in __init__) gates several
+        # persistent per-layer [B,H,T,T] debug tensors (_last_logits_full,
+        # _last_pa_raw_logits_unconditional, ...) that are never freed between
+        # forward calls -- at medium scale (24 layers x 16 heads) these alone
+        # are enough to OOM path_attn's pytorch reference kernel at L>=4096
+        # even when the actual attention computation would fit. Opt-in-to-
+        # disable via cfg_path (path_attn_capture_debug_tensors=false); default
+        # stays True so existing analysis/debug scripts are unaffected.
+        if not bool(getattr(config, "path_attn_capture_debug_tensors", True)):
+            _n_path_attn_modules = 0
+            for _, module in model.named_modules():
+                if hasattr(module, "path_attn_impl"):
+                    module._capture_debug_tensors = False
+                    _n_path_attn_modules += 1
+            logger.info(
+                "[path_attn] _capture_debug_tensors=False set on %d PaTHAttention modules",
+                _n_path_attn_modules,
+            )
         missing_keys = set(loading_info.get("missing_keys", [])) if isinstance(loading_info, dict) else set()
         _sanitize_wavelet_scalar_params(model, config, missing_keys=missing_keys)
         # PAT-225 anchor experiment: transplant another seed's learned wavelet
