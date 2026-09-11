@@ -1,0 +1,80 @@
+#!/bin/bash
+#SBATCH --job-name=hp_wpe_16384_full
+#SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/logs/%j_hp_wpe_medium_mix_10ep_16384_fullpool_1gpu.txt
+#SBATCH --partition=gpu_long
+#SBATCH --gres=gpu:p6000:1
+#SBATCH --time=100:00:00
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+
+# Real, reportable WRP/WPE L16384 HotpotQA-Long eval: full 7403-sample
+# hotpot_long_dev_uniform_16384_large_pool.jsonl (NOT the 69-sample
+# _16384only.jsonl used only for the earlier OOM feasibility smoke test --
+# that file is a stale/small subset only used by a handful of peripheral
+# baselines (rotary/alibi/nope); every main-table config (PA-only, K1, K3,
+# QWAB, mix_medium_owt_dd/PA_10ep) uses large_pool for L16384, confirmed by
+# grepping their actual run logs, e.g. job 461317's QWAB s42 L16384 run).
+# Runs on 1x p6000 -- the OOM smoke test (job 584222) already confirmed no
+# OOM at this length now that the dead path_blend_layers default is fixed.
+
+set -euxo pipefail
+
+if [ -f /home/is/hongyu-s/miniconda3/etc/profile.d/conda.sh ]; then
+  set +u; source /home/is/hongyu-s/miniconda3/etc/profile.d/conda.sh; conda activate latest_transformers; set -u
+fi
+
+export PYTHONPATH=/project/nlp-work5/hongyu-s/transformers/src${PYTHONPATH:+:${PYTHONPATH}}
+export HF_HOME=/cl/work5/hongyu-s/huggingfac
+export HF_DATASETS_CACHE=/cl/work5/hongyu-s/huggingfac/datasets
+export WANDB_DISABLED=true
+export WANDB_MODE=disabled
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+WORKDIR=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling
+cd "${WORKDIR}"
+
+CKPT="${WORKDIR}/runs/mix_medium_owt_wpe_10ep/checkpoint-15000"
+DATA_DIR="${WORKDIR}/hotpot_long/data"
+OUT_DIR="${WORKDIR}/hotpot_long/results_uniform/wpe_medium_mix_10ep_ckpt15000_newcode_check/L16384_2000samples"
+mkdir -p "${OUT_DIR}"
+
+MASTER_PORT=$(( 20000 + SLURM_JOB_ID % 10000 ))
+
+echo "=== WPE medium mix 10ep HotpotQA-Long L16384 [FULL 7403-sample large_pool] | 1x p6000 | ckpt: ${CKPT} ==="
+
+/cl/work5/hongyu-s/conda/envs/latest_transformers/bin/torchrun \
+  --nproc_per_node=1 \
+  --master_port="${MASTER_PORT}" \
+  ./run_clm.py \
+  --model_type gpt2 \
+  --tokenizer_name gpt2 \
+  --model_name_or_path "${CKPT}" \
+  --pe_method wavelet \
+  --relative_type 4 \
+  --attn_implementation eager \
+  --wavelet_router False \
+  --router_band_num 8 \
+  --scale_range 0 16 \
+  --wavelet_mode logit_bias_ctxscale_shift_v0 \
+  --wavelet_baseline_use False \
+  --use_beta_modulation False \
+  --use_soft_wavelet_fox False \
+  --single_A_B True \
+  --num_harmonics 1 \
+  --share_freq_across_heads True \
+  --analyzer False \
+  --dataset_name hotpot_qa \
+  --dataset_config_name distractor \
+  --hotpot_long_jsonl "${DATA_DIR}/hotpot_long_dev_uniform_16384_large_pool.jsonl" \
+  --hotpot_long_lengths 16384 \
+  --do_eval \
+  --max_eval_samples 2000 \
+  --block_size 16384 \
+  --per_device_eval_batch_size 1 \
+  --output_dir "${OUT_DIR}" \
+  --overwrite_output_dir \
+  --logging_dir "${OUT_DIR}/log" \
+  --load_best_model_at_end False \
+  --seed 42
+
+echo "=== Done: $(cat ${OUT_DIR}/eval_results.json 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(f'F1={d[\"eval_f1\"]:.4f} EM={d[\"eval_em\"]:.4f} loss={d[\"eval_loss\"]:.4f} samples={d[\"eval_samples\"]}')" 2>/dev/null || echo 'no results') ==="
