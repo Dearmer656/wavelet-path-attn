@@ -48,6 +48,7 @@ CFG_PATH="${RESULT_BASE}/supply_model.cfg"
 cat > "${CFG_PATH}" <<'CFG'
 wavelet_ctxscale_k=1
 wavelet_ctxscale_scale_max_exp=16.0
+wavelet_mode="db1"
 CFG
 
 echo "=== PA-only SMALL ckpt-80000: WikiText-103 perplexity sweep (2x p6000) ==="
@@ -80,7 +81,6 @@ for L in 512 2048 4096; do
     --share_freq_across_heads True \
     --pe_method vanilla \
     --num_harmonics 1 \
-    --wavelet_mode db1 \
     --wavelet_baseline_use False \
     --wavelet_router False \
     --use_beta_modulation False \
