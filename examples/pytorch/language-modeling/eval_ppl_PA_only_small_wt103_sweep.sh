@@ -48,7 +48,7 @@ CFG_PATH="${RESULT_BASE}/supply_model.cfg"
 cat > "${CFG_PATH}" <<'CFG'
 wavelet_ctxscale_k=1
 wavelet_ctxscale_scale_max_exp=16.0
-wavelet_mode="db1"
+wavelet_mode="off"
 CFG
 
 echo "=== PA-only SMALL ckpt-80000: WikiText-103 perplexity sweep (2x p6000) ==="
