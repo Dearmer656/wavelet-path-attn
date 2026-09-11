@@ -1785,7 +1785,14 @@ class GPT2Model(GPT2PreTrainedModel):
         self.post_init()
         self.config=config
         wavelet_mode = str(getattr(config, "wavelet_mode", "router_rel")).strip().lower()
-        self._skip_wavelet_decay_table = wavelet_mode in ("logit_bias_ctxscale_shift_v0", "logit_bias_ctxscale_shift_v0_film")
+        # "off" (config.wavelet_mode='off', i.e. no wavelet mechanism at all --
+        # see fla.layers.path_attn.PaTHAttention._normalize_wavelet_mode) never
+        # reads this table either, same as the ctxscale modes already skipped
+        # here -- without this, a PA-only/off eval at long block_size builds a
+        # dense [64, block_size, block_size] fp32 tensor for nothing (e.g.
+        # ~38.7GB at block_size=12288), OOMing on setups that would otherwise
+        # comfortably fit.
+        self._skip_wavelet_decay_table = wavelet_mode in ("logit_bias_ctxscale_shift_v0", "logit_bias_ctxscale_shift_v0_film", "off")
         self.scale_range = config.scale_range
         self.s_tensor = None
         self.beta_tensor = None
