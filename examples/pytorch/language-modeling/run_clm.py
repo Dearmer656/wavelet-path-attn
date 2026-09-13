@@ -8515,6 +8515,28 @@ def main():
     if rel_stats_callback is not None:
         rel_stats_callback.set_trainer(trainer)
 
+    if model_args.model_type == "forgetting_transformer" and getattr(trainer, "model_accepts_loss_kwargs", False):
+        # PAT-226: ForgettingTransformerForCausalLM.forward has a generic
+        # `**kwargs: Unpack[Any]` parameter, which trips HF Trainer's
+        # inspect-based model_accepts_loss_kwargs auto-detection (it only
+        # checks for a VAR_KEYWORD parameter) into wrongly believing this
+        # model implements the newer global-token-averaged loss convention.
+        # It does not: its criterion silently ignores num_items_in_batch and
+        # just computes a local reduction="mean" CE. Left uncorrected,
+        # Trainer.compute_loss multiplies the loss by world_size AND
+        # training_step skips the loss /= gradient_accumulation_steps
+        # normalization, inflating the actual pre-clip gradient by
+        # world_size * gradient_accumulation_steps. This silently forced
+        # gradient clipping to stay engaged for most of training even after
+        # the true (unscaled) gradient norm had already dropped below
+        # max_grad_norm -- a real distortion of the optimization trajectory,
+        # not just a cosmetic logging artifact. Confirmed on job 577434/585348.
+        trainer.model_accepts_loss_kwargs = False
+        logger.warning(
+            "[PAT-226] Disabled Trainer.model_accepts_loss_kwargs for forgetting_transformer "
+            "(model ignores num_items_in_batch; this avoids an 8x loss/grad_norm inflation bug)."
+        )
+
     if training_args.do_train:
         train_dataloader = trainer.get_train_dataloader()
         _, num_update_steps_per_epoch, _, _, epoch_based, len_dataloader, max_steps = trainer.set_initial_training_values(
@@ -8577,6 +8599,209 @@ def main():
         except Exception:
             pass
 
+        # Optional diagnostic: dump per-layer mean QWAB ctxscale "scale weight"
+        # (self._last_ctxscale_router_prob on each PaTHAttention module -- the
+        # router's probability mass on the real wavelet scale channel(s), K=1
+        # here, excluding the null channel) averaged across every eval forward
+        # pass in this run (use --max_eval_samples N to control how many
+        # "cases" get averaged over). No-op unless dump_scale_weight_json is
+        # set via --cfg_path.
+        scale_weight_dump_path = cfg_str(cfg, "dump_scale_weight_json", "")
+        scale_weight_hooks = []
+        scale_weight_sums: dict = {}
+        scale_weight_counts: dict = {}
+        if scale_weight_dump_path:
+            def _make_scale_weight_hook(_lid):
+                def _hook(module, inputs, output):
+                    prob = getattr(module, "_last_ctxscale_router_prob", None)
+                    if torch.is_tensor(prob) and prob.dim() == 4:
+                        v = float(prob.detach().float().mean().item())
+                        scale_weight_sums[_lid] = scale_weight_sums.get(_lid, 0.0) + v
+                        scale_weight_counts[_lid] = scale_weight_counts.get(_lid, 0) + 1
+                return _hook
+            for _name, _module in trainer.model.named_modules():
+                if _module.__class__.__name__ == "PaTHAttention":
+                    _lid = int(getattr(_module, "layer_idx", -1))
+                    scale_weight_hooks.append(_module.register_forward_hook(_make_scale_weight_hook(_lid)))
+            logger.info("[ScaleWeightDump] registered %d PaTHAttention forward hooks -> %s",
+                        len(scale_weight_hooks), scale_weight_dump_path)
+
+        # Optional diagnostic: does the per-layer scale-weight MEAN being stable across
+        # length/domain actually mean the router outputs a near-constant value
+        # regardless of query content (i.e. query-conditioning is doing no real work),
+        # or is the mean stable while individual token/query positions vary a lot
+        # (i.e. the router IS content-adaptive, just at a rate that happens to average
+        # out consistently)? Dumps, per layer: (a) a handful of specific relative query
+        # positions' mean value across all eval cases, and (b) the pooled
+        # mean/std/min/max of ALL per-position values across all cases -- a low std
+        # would support "near-constant regardless of query", a high std would support
+        # genuine per-position content-adaptivity. No-op unless
+        # dump_scale_weight_positions_json is set via --cfg_path.
+        scale_weight_pos_dump_path = cfg_str(cfg, "dump_scale_weight_positions_json", "")
+        scale_weight_pos_hooks = []
+        scale_weight_pos_sums: dict = {}
+        scale_weight_pos_counts: dict = {}
+        scale_weight_pos_stats: dict = {}  # lid -> [n, sum, sum_sq, min, max]
+        SCALE_WEIGHT_POS_FRACS = [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0]
+        # Optional: sample FIXED ABSOLUTE query positions instead of length-relative
+        # fractions (e.g. "100,300,480,500,512,520,550,600,700,1000,1500") -- needed to
+        # check for a step/jump right at an absolute boundary like L_train=512 within
+        # a single longer sequence, which relative fractions can't localize (0.25 of
+        # L=2048 is position 512, but 0.25 of L=4096 is position 1024 -- a different
+        # absolute point every time).
+        _abs_pos_str = cfg_str(cfg, "scale_weight_abs_positions", "")
+        SCALE_WEIGHT_ABS_POSITIONS = [int(x) for x in _abs_pos_str.split(",") if x.strip()] if _abs_pos_str else None
+        SCALE_WEIGHT_POS_LABELS = SCALE_WEIGHT_ABS_POSITIONS if SCALE_WEIGHT_ABS_POSITIONS is not None else SCALE_WEIGHT_POS_FRACS
+        if scale_weight_pos_dump_path:
+            def _make_scale_weight_pos_hook(_lid):
+                def _hook(module, inputs, output):
+                    prob = getattr(module, "_last_ctxscale_router_prob", None)
+                    if torch.is_tensor(prob) and prob.dim() == 4:
+                        per_pos = prob.detach().float().mean(dim=(0, 2, 3))  # [T]
+                        T = per_pos.shape[0]
+                        for label in SCALE_WEIGHT_POS_LABELS:
+                            if SCALE_WEIGHT_ABS_POSITIONS is not None:
+                                if label >= T:
+                                    continue
+                                idx = label
+                            else:
+                                idx = min(int(round(label * (T - 1))), T - 1)
+                            key = (_lid, label)
+                            v = float(per_pos[idx].item())
+                            scale_weight_pos_sums[key] = scale_weight_pos_sums.get(key, 0.0) + v
+                            scale_weight_pos_counts[key] = scale_weight_pos_counts.get(key, 0) + 1
+                        n = int(per_pos.numel())
+                        s = float(per_pos.sum().item())
+                        sq = float((per_pos * per_pos).sum().item())
+                        mn = float(per_pos.min().item())
+                        mx = float(per_pos.max().item())
+                        acc = scale_weight_pos_stats.get(_lid)
+                        if acc is None:
+                            scale_weight_pos_stats[_lid] = [n, s, sq, mn, mx]
+                        else:
+                            acc[0] += n
+                            acc[1] += s
+                            acc[2] += sq
+                            acc[3] = min(acc[3], mn)
+                            acc[4] = max(acc[4], mx)
+                return _hook
+            for _name, _module in trainer.model.named_modules():
+                if _module.__class__.__name__ == "PaTHAttention":
+                    _lid = int(getattr(_module, "layer_idx", -1))
+                    scale_weight_pos_hooks.append(_module.register_forward_hook(_make_scale_weight_pos_hook(_lid)))
+            logger.info("[ScaleWeightPosDump] registered %d PaTHAttention forward hooks -> %s",
+                        len(scale_weight_pos_hooks), scale_weight_pos_dump_path)
+
+        # Optional diagnostic (PAT-249): does PaTH's own raw pre-wavelet attention
+        # score (E_base_raw from path_ut_base_raw -- the cumulative-Householder-
+        # transition-derived logit, NO mask/scale/wavelet bias applied) decay with
+        # query-key distance D=i-j, independent of any QWAB mechanism? Monkeypatches
+        # the module-level path_ut_base_raw function in fla.layers.path_attn (Python
+        # resolves the call site's global lookup against the module's namespace, so
+        # this intercepts every call from within that module without touching the
+        # source file). Layer index is inferred from call order modulo num layers
+        # (path_ut_base_raw itself is not layer-aware / doesn't receive layer_idx).
+        # Buckets by absolute distance D into PAT-249's suggested [0,512,1024,2048,4096]
+        # edges; records mean/std/n of E_base_raw over valid (i>=j) causal pairs in
+        # each bucket, per layer. No-op unless dump_path_distance_decay_json is set.
+        path_decay_dump_path = cfg_str(cfg, "dump_path_distance_decay_json", "")
+        path_decay_query_min_frac = cfg_float(cfg, "path_distance_decay_query_min_frac", 0.0)
+        path_decay_orig_fn = None
+        path_decay_call_counter = [0]
+        path_decay_num_layers = int(getattr(trainer.model.config, "num_hidden_layers", 24))
+        PATH_DECAY_BUCKET_EDGES = [0, 512, 1024, 2048, 4096, 1 << 30]
+        path_decay_stats: dict = {}  # (layer, bucket_idx) -> [n, sum, sum_sq]
+        if path_decay_dump_path:
+            import fla.layers.path_attn as _fla_path_attn_mod
+            path_decay_orig_fn = _fla_path_attn_mod.path_ut_base_raw
+
+            def _bucket_idx(d):
+                for bi in range(len(PATH_DECAY_BUCKET_EDGES) - 1):
+                    if PATH_DECAY_BUCKET_EDGES[bi] <= d < PATH_DECAY_BUCKET_EDGES[bi + 1]:
+                        return bi
+                return len(PATH_DECAY_BUCKET_EDGES) - 2
+
+            def _patched_path_ut_base_raw(*args, **kwargs):
+                out = path_decay_orig_fn(*args, **kwargs)
+                lid = path_decay_call_counter[0] % path_decay_num_layers
+                path_decay_call_counter[0] += 1
+                E_base_raw = out[0]  # [B,H,T,T]
+                with torch.no_grad():
+                    T = E_base_raw.shape[-1]
+                    e = E_base_raw.detach().float()
+                    # mean over batch/head -> [T,T] to keep this cheap
+                    e2 = e.mean(dim=(0, 1))
+                    idx = torch.arange(T, device=e2.device)
+                    dist = (idx.unsqueeze(0) - idx.unsqueeze(1)).abs()  # [i,j] -> |i-j|, T x T
+                    causal = idx.unsqueeze(1) >= idx.unsqueeze(0)  # i>=j valid entries (row=i,col=j) -- e2[i,j]
+                    # e2 is indexed [i,j] matching E_base_raw's own [.., i, j] layout per its docstring
+                    # Restrict to a fixed LATE band of query rows (i) so every distance bucket draws
+                    # from the SAME set of queries -- otherwise large-distance buckets can only be
+                    # populated by large-i queries (j=i-d>=0), confounding "distance effect" with
+                    # "which absolute query position". query_min_frac=0.0 disables the restriction
+                    # (matches the original, confounded behavior) for backward compatibility.
+                    q_min_i = int(path_decay_query_min_frac * (T - 1))
+                    query_band = (idx >= q_min_i).unsqueeze(1) & torch.ones(1, T, dtype=torch.bool, device=e2.device)
+                    for bi in range(len(PATH_DECAY_BUCKET_EDGES) - 1):
+                        lo, hi = PATH_DECAY_BUCKET_EDGES[bi], PATH_DECAY_BUCKET_EDGES[bi + 1]
+                        mask = causal & (dist >= lo) & (dist < hi) & query_band
+                        n = int(mask.sum().item())
+                        if n == 0:
+                            continue
+                        vals = e2[mask]
+                        s = float(vals.sum().item())
+                        sq = float((vals * vals).sum().item())
+                        key = (lid, bi)
+                        acc = path_decay_stats.get(key)
+                        if acc is None:
+                            path_decay_stats[key] = [n, s, sq]
+                        else:
+                            acc[0] += n
+                            acc[1] += s
+                            acc[2] += sq
+                return out
+            _fla_path_attn_mod.path_ut_base_raw = _patched_path_ut_base_raw
+            logger.info("[PathDecayDump] monkeypatched path_ut_base_raw -> %s", path_decay_dump_path)
+
+        # Optional diagnostic: dump per-layer mean forget-gate retention rate for FoX
+        # (forgetting_transformer). f_proj(hidden_states) is the raw pre-activation for
+        # the per-position, per-head forget gate; the model itself applies
+        # F.logsigmoid(...) to it and the retention rate per step is
+        # exp(logsigmoid(x)) == sigmoid(x) exactly, so we hook f_proj directly and
+        # apply sigmoid ourselves -- no need to touch fla's forgetting_attn.py at all.
+        # Retention close to 1.0 = long effective memory (near-full attention); close
+        # to 0 = fast forgetting (short local window). No-op unless
+        # dump_forget_gate_json is set via --cfg_path.
+        forget_gate_dump_path = cfg_str(cfg, "dump_forget_gate_json", "")
+        forget_gate_hooks = []
+        forget_gate_sums: dict = {}
+        forget_gate_counts: dict = {}
+        forget_gate_perhead_sums: dict = {}  # lid -> running [H] sum of per-call per-head mean retention
+        if forget_gate_dump_path:
+            def _make_forget_gate_hook(_lid):
+                def _hook(module, inputs, output):
+                    if torch.is_tensor(output):
+                        retention = torch.sigmoid(output.detach().float())
+                        v = float(retention.mean().item())
+                        forget_gate_sums[_lid] = forget_gate_sums.get(_lid, 0.0) + v
+                        forget_gate_counts[_lid] = forget_gate_counts.get(_lid, 0) + 1
+                        # retention shape [B, T, H]: mean over B,T only, keep per-head breakdown
+                        # (the scalar mean above collapses heads together, which hides any
+                        # small subset of near-1.0-retention "persistent" heads that a global
+                        # mean/half-life would never reveal).
+                        per_head = retention.mean(dim=tuple(range(retention.dim() - 1)))
+                        if _lid in forget_gate_perhead_sums:
+                            forget_gate_perhead_sums[_lid] = forget_gate_perhead_sums[_lid] + per_head
+                        else:
+                            forget_gate_perhead_sums[_lid] = per_head.clone()
+                return _hook
+            for _name, _module in trainer.model.named_modules():
+                if _module.__class__.__name__ == "ForgettingAttention" and hasattr(_module, "f_proj"):
+                    _lid = int(getattr(_module, "layer_idx", -1))
+                    forget_gate_hooks.append(_module.f_proj.register_forward_hook(_make_forget_gate_hook(_lid)))
+            logger.info("[ForgetGateDump] registered %d ForgettingAttention.f_proj forward hooks -> %s",
+                        len(forget_gate_hooks), forget_gate_dump_path)
+
         if data_args.dataset_name == "ruler" and str(getattr(data_args, "ruler_eval_mode", "generate")).strip().lower() == "generate":
             metrics = run_ruler_generation_eval(trainer, eval_dataset)
         else:
@@ -8584,6 +8809,133 @@ def main():
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             metrics = trainer.evaluate()
+
+        if scale_weight_dump_path:
+            for _h in scale_weight_hooks:
+                _h.remove()
+            per_layer = {
+                str(lid): (scale_weight_sums[lid] / scale_weight_counts[lid])
+                for lid in sorted(scale_weight_sums.keys())
+            }
+            overall_mean = (sum(per_layer.values()) / len(per_layer)) if per_layer else None
+            os.makedirs(os.path.dirname(scale_weight_dump_path), exist_ok=True)
+            with open(scale_weight_dump_path, "w") as f:
+                json.dump(
+                    {
+                        "checkpoint": str(model_args.model_name_or_path),
+                        "n_cases_per_layer": {str(lid): scale_weight_counts[lid] for lid in sorted(scale_weight_counts.keys())},
+                        "per_layer_mean_scale_weight": per_layer,
+                        "overall_mean_scale_weight": overall_mean,
+                    },
+                    f,
+                    indent=2,
+                )
+            logger.info("[ScaleWeightDump] wrote %s (overall_mean=%s)", scale_weight_dump_path, overall_mean)
+
+        if scale_weight_pos_dump_path:
+            for _h in scale_weight_pos_hooks:
+                _h.remove()
+            per_layer_positions = {}
+            for lid in sorted({k[0] for k in scale_weight_pos_sums.keys()}):
+                per_layer_positions[str(lid)] = {
+                    str(label): (scale_weight_pos_sums[(lid, label)] / scale_weight_pos_counts[(lid, label)])
+                    for label in SCALE_WEIGHT_POS_LABELS
+                    if (lid, label) in scale_weight_pos_sums
+                }
+            per_layer_pooled_stats = {}
+            for lid, (n, s, sq, mn, mx) in scale_weight_pos_stats.items():
+                mean = s / n if n > 0 else None
+                var = (sq / n - mean * mean) if (n > 0 and mean is not None) else None
+                std = (var ** 0.5) if (var is not None and var > 0) else 0.0
+                per_layer_pooled_stats[str(lid)] = {
+                    "n_positions_pooled": n, "mean": mean, "std": std, "min": mn, "max": mx,
+                }
+            os.makedirs(os.path.dirname(scale_weight_pos_dump_path), exist_ok=True)
+            with open(scale_weight_pos_dump_path, "w") as f:
+                json.dump(
+                    {
+                        "checkpoint": str(model_args.model_name_or_path),
+                        "position_labels": SCALE_WEIGHT_POS_LABELS,
+                        "position_labels_are_absolute": SCALE_WEIGHT_ABS_POSITIONS is not None,
+                        "per_layer_mean_at_position": per_layer_positions,
+                        "per_layer_pooled_stats_all_positions": per_layer_pooled_stats,
+                    },
+                    f,
+                    indent=2,
+                )
+            logger.info("[ScaleWeightPosDump] wrote %s", scale_weight_pos_dump_path)
+
+        if path_decay_dump_path:
+            import fla.layers.path_attn as _fla_path_attn_mod
+            _fla_path_attn_mod.path_ut_base_raw = path_decay_orig_fn
+            per_layer_buckets = {}
+            for (lid, bi), (n, s, sq) in path_decay_stats.items():
+                mean = s / n if n > 0 else None
+                var = (sq / n - mean * mean) if (n > 0 and mean is not None) else None
+                std = (var ** 0.5) if (var is not None and var > 0) else 0.0
+                per_layer_buckets.setdefault(str(lid), {})[f"{PATH_DECAY_BUCKET_EDGES[bi]}-{PATH_DECAY_BUCKET_EDGES[bi+1]}"] = {
+                    "n": n, "mean": mean, "std": std,
+                }
+            os.makedirs(os.path.dirname(path_decay_dump_path), exist_ok=True)
+            with open(path_decay_dump_path, "w") as f:
+                json.dump(
+                    {
+                        "checkpoint": str(model_args.model_name_or_path),
+                        "bucket_edges": PATH_DECAY_BUCKET_EDGES,
+                        "query_min_frac": path_decay_query_min_frac,
+                        "per_layer_bucket_stats": per_layer_buckets,
+                    },
+                    f,
+                    indent=2,
+                )
+            logger.info("[PathDecayDump] wrote %s", path_decay_dump_path)
+
+        if forget_gate_dump_path:
+            for _h in forget_gate_hooks:
+                _h.remove()
+            per_layer_fg = {
+                str(lid): (forget_gate_sums[lid] / forget_gate_counts[lid])
+                for lid in sorted(forget_gate_sums.keys())
+            }
+            overall_mean_fg = (sum(per_layer_fg.values()) / len(per_layer_fg)) if per_layer_fg else None
+            # Effective half-life in steps: number of positions back until retention
+            # decays to 50%, i.e. retention^n = 0.5 -> n = ln(0.5)/ln(retention).
+            half_life_fg = {
+                lid: (math.log(0.5) / math.log(r) if 0.0 < r < 1.0 else float("inf"))
+                for lid, r in per_layer_fg.items()
+            }
+            per_layer_per_head_mean = {}
+            per_layer_head_min = {}
+            per_layer_head_max = {}
+            per_layer_head_half_life_max = {}
+            for lid, s in forget_gate_perhead_sums.items():
+                n = forget_gate_counts.get(lid, 1)
+                head_means = (s / n).cpu().tolist()
+                per_layer_per_head_mean[str(lid)] = head_means
+                per_layer_head_min[str(lid)] = min(head_means)
+                per_layer_head_max[str(lid)] = max(head_means)
+                r_max = max(head_means)
+                per_layer_head_half_life_max[str(lid)] = (
+                    math.log(0.5) / math.log(r_max) if 0.0 < r_max < 1.0 else float("inf")
+                )
+            os.makedirs(os.path.dirname(forget_gate_dump_path), exist_ok=True)
+            with open(forget_gate_dump_path, "w") as f:
+                json.dump(
+                    {
+                        "checkpoint": str(model_args.model_name_or_path),
+                        "n_cases_per_layer": {str(lid): forget_gate_counts[lid] for lid in sorted(forget_gate_counts.keys())},
+                        "per_layer_mean_retention": per_layer_fg,
+                        "per_layer_half_life_steps": half_life_fg,
+                        "overall_mean_retention": overall_mean_fg,
+                        "per_layer_per_head_mean_retention": per_layer_per_head_mean,
+                        "per_layer_head_min_retention": per_layer_head_min,
+                        "per_layer_head_max_retention": per_layer_head_max,
+                        "per_layer_half_life_steps_from_max_retention_head": per_layer_head_half_life_max,
+                    },
+                    f,
+                    indent=2,
+                )
+            logger.info("[ForgetGateDump] wrote %s (overall_mean_retention=%s)", forget_gate_dump_path, overall_mean_fg)
 
         max_eval_samples = data_args.max_eval_samples if data_args.max_eval_samples is not None else len(eval_dataset)
         if data_args.streaming:
