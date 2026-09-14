@@ -5107,6 +5107,27 @@ def main():
             model, loading_info = model_loaded
         else:
             model = model_loaded
+        # BUGFIX: rotary_embedding_torch.RotaryEmbedding stores `freqs` as an
+        # nn.Parameter (persistent, part of state_dict), not a buffer. GPT2Attention
+        # .__init__ correctly rescales it via _apply_yarn_to_rotary_embedding when
+        # use_yarn=True, but from_pretrained's subsequent state_dict load then
+        # silently overwrites those rescaled freqs with the checkpoint's original
+        # (pre-YaRN) values -- verified directly (post-load freqs identical to a
+        # plain, non-YaRN load of the same checkpoint). Every YaRN eval/finetune run
+        # to date has therefore been running plain RoPE (plus the separate, still-
+        # correct yarn_attention_factor scalar, which isn't part of state_dict).
+        # Reapplying here, after the checkpoint load completes, fixes this for good.
+        if bool(getattr(config, "use_yarn", False)):
+            from transformers.models.gpt2.modeling_gpt2 import _apply_yarn_to_rotary_embedding
+            _n_yarn_reapplied = 0
+            for _, module in model.named_modules():
+                if hasattr(module, "rotary_emb"):
+                    module.yarn_attention_factor = _apply_yarn_to_rotary_embedding(config, module.rotary_emb)
+                    _n_yarn_reapplied += 1
+            logger.info(
+                "[YaRN] reapplied post-load (from_pretrained's state_dict load overwrites "
+                "the __init__-time rescale) on %d rotary_emb modules", _n_yarn_reapplied,
+            )
         if float(getattr(config, "coe_for_rel_init", -1)) != -1:
             with torch.no_grad():
                 for _, module in model.named_modules():
