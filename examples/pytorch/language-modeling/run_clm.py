@@ -5109,24 +5109,43 @@ def main():
             model = model_loaded
         # BUGFIX: rotary_embedding_torch.RotaryEmbedding stores `freqs` as an
         # nn.Parameter (persistent, part of state_dict), not a buffer. GPT2Attention
-        # .__init__ correctly rescales it via _apply_yarn_to_rotary_embedding when
-        # use_yarn=True, but from_pretrained's subsequent state_dict load then
-        # silently overwrites those rescaled freqs with the checkpoint's original
-        # (pre-YaRN) values -- verified directly (post-load freqs identical to a
-        # plain, non-YaRN load of the same checkpoint). Every YaRN eval/finetune run
-        # to date has therefore been running plain RoPE (plus the separate, still-
-        # correct yarn_attention_factor scalar, which isn't part of state_dict).
-        # Reapplying here, after the checkpoint load completes, fixes this for good.
-        if bool(getattr(config, "use_yarn", False)):
-            from transformers.models.gpt2.modeling_gpt2 import _apply_yarn_to_rotary_embedding
-            _n_yarn_reapplied = 0
+        # .__init__ correctly builds it from config.rope_theta (and rescales it via
+        # _apply_yarn_to_rotary_embedding when use_yarn=True), but from_pretrained's
+        # subsequent state_dict load then silently overwrites those freqs with the
+        # checkpoint's ORIGINAL saved values (whatever rope_theta the checkpoint was
+        # trained/saved with) -- verified directly via a real forward pass (bit-
+        # identical logits, max abs diff 0.0, when loading the same checkpoint with
+        # two different --rope_theta values). This is NOT YaRN-specific: plain NTK
+        # (--rope_theta X, no --use_yarn) has silently had zero effect too, for any
+        # eval/finetune that loads an existing checkpoint rather than training from
+        # scratch. Reapplying both the base theta-derived freqs and (if requested)
+        # YaRN's rescale on top, right after the checkpoint load completes, fixes
+        # both paths for good.
+        if getattr(config, "pe_method", None) == "rotary":
+            import math as _math
+            _n_rope_reapplied = 0
             for _, module in model.named_modules():
                 if hasattr(module, "rotary_emb"):
-                    module.yarn_attention_factor = _apply_yarn_to_rotary_embedding(config, module.rotary_emb)
-                    _n_yarn_reapplied += 1
+                    _re = module.rotary_emb
+                    _theta = float(getattr(config, "rope_theta", 10000))
+                    # rotary_embedding_torch's 'lang' freqs formula: 1/theta**(arange(0,dim,2)/dim);
+                    # freqs already has the post-arange length, so dim = 2*len(freqs).
+                    _dim = _re.freqs.shape[-1] * 2
+                    _base_freqs = 1.0 / (
+                        _theta ** (torch.arange(0, _dim, 2, device=_re.freqs.device).float() / _dim)
+                    )
+                    _re.freqs.data.copy_(_base_freqs.to(device=_re.freqs.device, dtype=_re.freqs.dtype))
+                    if hasattr(_re, "cached_freqs_seq_len"):
+                        _re.cached_freqs_seq_len = 0  # invalidate any stale cached_freqs from a prior forward
+                    module.yarn_attention_factor = None
+                    if bool(getattr(config, "use_yarn", False)):
+                        from transformers.models.gpt2.modeling_gpt2 import _apply_yarn_to_rotary_embedding
+                        module.yarn_attention_factor = _apply_yarn_to_rotary_embedding(config, _re)
+                    _n_rope_reapplied += 1
             logger.info(
-                "[YaRN] reapplied post-load (from_pretrained's state_dict load overwrites "
-                "the __init__-time rescale) on %d rotary_emb modules", _n_yarn_reapplied,
+                "[RoPE] reapplied theta=%s (use_yarn=%s) post-load on %d rotary_emb modules "
+                "(from_pretrained's state_dict load overwrites the __init__-time computation)",
+                getattr(config, "rope_theta", 10000), bool(getattr(config, "use_yarn", False)), _n_rope_reapplied,
             )
         if float(getattr(config, "coe_for_rel_init", -1)) != -1:
             with torch.no_grad():
