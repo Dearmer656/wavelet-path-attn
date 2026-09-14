@@ -5141,6 +5141,12 @@ def main():
                     if bool(getattr(config, "use_yarn", False)):
                         from transformers.models.gpt2.modeling_gpt2 import _apply_yarn_to_rotary_embedding
                         module.yarn_attention_factor = _apply_yarn_to_rotary_embedding(config, _re)
+                        # DIAGNOSTIC opt-in (cfg_path): isolate whether YaRN's mscale
+                        # (attention_factor, a uniform q/k temperature scale) is what's
+                        # hurting HotpotQA F1, independent of the frequency rescale
+                        # itself. No-op unless explicitly set.
+                        if bool(getattr(config, "yarn_disable_attention_factor", False)):
+                            module.yarn_attention_factor = None
                     _n_rope_reapplied += 1
             logger.info(
                 "[RoPE] reapplied theta=%s (use_yarn=%s) post-load on %d rotary_emb modules "
