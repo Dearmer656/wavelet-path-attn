@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=xsum_ntk_medium
-#SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/mix_medium_owt_rotary_10ep_s42_fp32/ckpt_eval_xsum_ntk/%j_xsum_ntk_medium_mix_10ep.txt
+#SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/log_file/train/%j_xsum_ntk_medium_mix_10ep.txt
 #SBATCH --partition=gpu_long
 #SBATCH --gres=gpu:a6000:2
 #SBATCH --time=24:00:00
