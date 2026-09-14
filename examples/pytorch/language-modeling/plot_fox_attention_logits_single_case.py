@@ -112,8 +112,11 @@ captured = {}
 
 
 def make_hook(layer_idx):
-    def hook(module, inputs, output):
-        hidden_states = inputs[0]
+    def hook(module, args, kwargs, output):
+        if args:
+            hidden_states = args[0]
+        else:
+            hidden_states = kwargs["hidden_states"]
         q = module.q_proj(hidden_states)
         k = module.k_proj(hidden_states)
         f = F.logsigmoid(module.f_proj(hidden_states).float())
@@ -125,7 +128,7 @@ hooks = []
 for name, module in model.named_modules():
     if module.__class__.__name__ == "ForgettingAttention":
         lid = int(getattr(module, "layer_idx", -1))
-        hooks.append(module.register_forward_hook(make_hook(lid)))
+        hooks.append(module.register_forward_hook(make_hook(lid), with_kwargs=True))
 
 with torch.no_grad():
     model(input_ids=input_ids, attention_mask=None)
