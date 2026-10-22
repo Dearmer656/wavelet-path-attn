@@ -230,7 +230,7 @@ class ModelArguments:
         default="wavelet",
         metadata={
             "help": "Wavelet logit bias function: wavelet (Ricker) | sine | morlet | gaussian | linear | ricker_cos | morlet_gaussamp.",
-            "choices": ["wavelet", "sine", "morlet", "gaussian", "linear", "ricker_cos", "morlet_gaussamp"],
+            "choices": ["wavelet", "sine", "morlet", "gaussian", "linear", "ricker_cos", "morlet_gaussamp", "first_token", "prefix_box"],
         },
     )
     relative_type: Optional[str] = field(
