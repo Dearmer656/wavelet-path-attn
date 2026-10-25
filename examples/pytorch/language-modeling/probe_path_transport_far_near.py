@@ -45,6 +45,10 @@ MODELS = {
 BINS = [1, 4, 16, 64, 256, 512, 1024, 2048, 4096, 8192]
 Q_ROWS = 24
 MATCH_PAD = 256
+PREFIX = 512     # 2*rho: where the prefix bias lives (absolute key index)
+NEAR = 512       # training length
+PROFILE = 512
+PBUCK = 16
 
 
 def render_with_support(ex, tok):
@@ -134,6 +138,30 @@ def stats_one(C, Rr, Bv, is_sup, ctx_end, scale):
             corrCE=float(corr.mean()),
             massE=float((pE * mf).sum(-1).mean()), massF=float((pF * mf).sum(-1).mean()),
         ))
+    jj = j.expand(H, Q, T)
+    regions = {"prefix": valid & (jj < PREFIX), "far_mid": valid & (jj >= PREFIX) & (dist >= NEAR),
+               "near": valid & (jj >= PREFIX) & (dist < NEAR)}
+    out["region"] = {}
+    for rn, m in regions.items():
+        if m.sum() < H * Q * 2: continue
+        mf = m.float(); n = mf.sum(-1).clamp_min(1)
+        def mean(x): return (x * mf).sum(-1) / n
+        def cen(x): return (x - mean(x).unsqueeze(-1)) * mf
+        def rms(x): return float(((x ** 2 * mf).sum(-1) / n).sqrt().mean())
+        def corr(a, b):
+            a, b = cen(a), cen(b)
+            return float(((a * b).sum(-1) / ((a ** 2).sum(-1).sqrt() * (b ** 2).sum(-1).sqrt()).clamp_min(1e-9)).mean())
+        out["region"][rn] = dict(
+            rmsC=rms(cen(C)), rmsR=rms(cen(Rr)), rmsE=rms(cen(E)), rmsB=rms(cen(Bv)),
+            meanE=float(mean(E).mean()), meanB=float(mean(Bv).mean()), meanR=float(mean(Rr).mean()),
+            corrCE=corr(C, E), corrBR=corr(Bv, Rr), corrBE=corr(Bv, E), corrBC=corr(Bv, C),
+            massE=float((pE * mf).sum(-1).mean()), massF=float((pF * mf).sum(-1).mean()),
+        )
+    # absolute-position profile of the first PROFILE keys (bucketed), mean over heads/rows
+    nb_ = PROFILE // PBUCK
+    def prof(x): return x[:, :, :PROFILE].mean((0, 1)).view(nb_, PBUCK).mean(-1).tolist()
+    out["profile"] = dict(E=prof(E), R=prof(Rr), C=prof(C), B=prof(Bv),
+                          pE=prof(pE * PBUCK), pF=prof(pF * PBUCK))
     sup = torch.tensor(is_sup, device=dev).view(1, 1, T).expand(H, Q, T) & valid
     if sup.any():
         sd = dist[sup]; dlo, dhi = int(sd.min()) - MATCH_PAD, int(sd.max()) + MATCH_PAD
@@ -213,6 +241,11 @@ def reduce(lst):
     for b in range(len(BINS) - 1):
         vals = [s["bin"][b] for s in lst if s["bin"][b] is not None]
         out["bin"].append({k: float(np.mean([v[k] for v in vals])) for k in vals[0]} if vals else None)
+    out["region"] = {}
+    for rn in ("prefix", "far_mid", "near"):
+        vals = [s["region"][rn] for s in lst if rn in s["region"]]
+        if vals: out["region"][rn] = {k: float(np.mean([v[k] for v in vals])) for k in vals[0]}
+    out["profile"] = {k: np.mean([s["profile"][k] for s in lst], 0).tolist() for k in lst[0]["profile"]}
     sv = [s["sup"] for s in lst if "sup" in s]
     if sv:
         out["sup"] = {}
