@@ -16,7 +16,7 @@ For answer-side query rows (last Q_ROWS positions: question + "Answer:"), per la
       and attention mass on support (base softmax vs full softmax).
 Front-placed HotpotQA-Long (hotpot_long_dev.jsonl), so support is far at L>=2048.
 """
-import argparse, json, sys
+import argparse, ast, json, sys
 from pathlib import Path
 import numpy as np
 import torch
@@ -156,8 +156,29 @@ def stats_one(C, Rr, Bv, is_sup, ctx_end, scale):
     return out
 
 
+def apply_supply_cfg(cfg, run_dir):
+    """Mirror run_clm.py --cfg_path: add missing keys, force-override wavelet_* prefixes."""
+    f = run_dir / "supply_model.cfg"
+    if not f.exists(): return
+    kv = {}
+    for line in f.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line: continue
+        k, v = (x.strip() for x in line.split("=", 1))
+        try: v = ast.literal_eval(v)
+        except Exception: pass
+        kv[k] = v
+    have = set(cfg.to_dict())
+    for k, v in kv.items():
+        if k not in have or k.startswith(("wavelet_mode", "wavelet_ctxscale", "wavelet_logit_bias", "wavelet_router_sigmoid",
+                                          "wavelet_ctx_feat", "rel_use_layer", "_attn_implementation")) or k == "rel_use_layer_list":
+            setattr(cfg, k, v)
+
+
 def run_model(name, ck, tok, L, n, dev, cap):
-    cfg = AutoConfig.from_pretrained(ck); cfg.attn_implementation = "path_attn"; cfg.path_attn_impl = "pytorch"
+    cfg = AutoConfig.from_pretrained(ck); apply_supply_cfg(cfg, ck.parent)
+    if not hasattr(cfg, "wavelet_ctxscale_k"): cfg.wavelet_ctxscale_k = 1  # PaTH baseline: ctxscale unused (db1, no router)
+    cfg.attn_implementation = "path_attn"; cfg.path_attn_impl = "pytorch"
     cfg.wavelet_logit_bias_log_every = 10 ** 9; cfg.wavelet_ctxscale_eval_log_once = False
     model = AutoModelForCausalLM.from_pretrained(ck, config=cfg, torch_dtype=torch.float32).to(dev).eval()
     for m in model.modules():
