@@ -159,7 +159,10 @@ def stats_one(C, Rr, Bv, is_sup, ctx_end, scale):
         )
     # absolute-position profile of the first PROFILE keys (bucketed), mean over heads/rows
     nb_ = PROFILE // PBUCK
-    def prof(x): return x[:, :, :PROFILE].mean((0, 1)).view(nb_, PBUCK).mean(-1).tolist()
+    def prof(x):
+        v = x[:, :, :PROFILE].mean((0, 1))
+        if v.numel() < PROFILE: v = torch.cat([v, v.new_full((PROFILE - v.numel(),), float("nan"))])
+        return torch.nanmean(v.view(nb_, PBUCK), -1).tolist()
     out["profile"] = dict(E=prof(E), R=prof(Rr), C=prof(C), B=prof(Bv),
                           pE=prof(pE * PBUCK), pF=prof(pF * PBUCK))
     sup = torch.tensor(is_sup, device=dev).view(1, 1, T).expand(H, Q, T) & valid
@@ -245,7 +248,7 @@ def reduce(lst):
     for rn in ("prefix", "far_mid", "near"):
         vals = [s["region"][rn] for s in lst if rn in s["region"]]
         if vals: out["region"][rn] = {k: float(np.mean([v[k] for v in vals])) for k in vals[0]}
-    out["profile"] = {k: np.mean([s["profile"][k] for s in lst], 0).tolist() for k in lst[0]["profile"]}
+    out["profile"] = {k: np.nanmean([s["profile"][k] for s in lst], 0).tolist() for k in lst[0]["profile"]}
     sv = [s["sup"] for s in lst if "sup" in s]
     if sv:
         out["sup"] = {}
