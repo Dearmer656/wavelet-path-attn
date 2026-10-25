@@ -177,7 +177,10 @@ def apply_supply_cfg(cfg, run_dir):
 
 def run_model(name, ck, tok, L, n, dev, cap):
     cfg = AutoConfig.from_pretrained(ck); apply_supply_cfg(cfg, ck.parent)
-    if not hasattr(cfg, "wavelet_ctxscale_k"): cfg.wavelet_ctxscale_k = 1  # PaTH baseline: ctxscale unused (db1, no router)
+    if not hasattr(cfg, "wavelet_ctxscale_k"):  # PaTH baseline: ckpt carries unused K=8 ctxscale params (db1, no router)
+        cfg.wavelet_ctxscale_k = 8
+        mx = getattr(cfg, "wavelet_ctxscale_scale_max_exp", 14.0)
+        if not isinstance(mx, (list, tuple)): cfg.wavelet_ctxscale_scale_max_exp = [float(mx)] * 8
     cfg.attn_implementation = "path_attn"; cfg.path_attn_impl = "pytorch"
     cfg.wavelet_logit_bias_log_every = 10 ** 9; cfg.wavelet_ctxscale_eval_log_once = False
     model = AutoModelForCausalLM.from_pretrained(ck, config=cfg, torch_dtype=torch.float32).to(dev).eval()
