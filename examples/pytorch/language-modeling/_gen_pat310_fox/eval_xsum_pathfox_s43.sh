@@ -7,5 +7,6 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 set -uxo pipefail
+export TRITON_CACHE_DIR=/tmp/triton_cache_${SLURM_JOB_ID:-manual}
 # PAT-310 W5 PaTH-FoX (triton) small XSum, paper protocol (same helper as Table 4 basis runs)
 bash /cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/_gen_pat310_fox/eval_filter_xsum_fox_triton_1gpu.sh /cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/pat310_fox/small_pathfox_s43 off 43 small_pathfox_s43
