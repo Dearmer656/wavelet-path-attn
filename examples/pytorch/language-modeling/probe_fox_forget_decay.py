@@ -50,7 +50,9 @@ def main():
             if not hasattr(cfg, k) or k.startswith("wavelet"): setattr(cfg, k, v)
         cfg.path_attn_impl = "triton"; cfg.use_forget_gate = True
         model = AutoModelForCausalLM.from_pretrained(ck, config=cfg, torch_dtype=torch.float32).to(dev).eval()
-        mods = [m for m in model.modules() if isinstance(m, pa.PaTHAttention) and getattr(m, "use_forget_gate", False)]
+        mods = [m for m in model.modules() if isinstance(getattr(m, "g_proj", None), torch.nn.Linear) and getattr(m, "use_forget_gate", False)]
+        print(f"{name}: {len(mods)} forget-gate modules ({type(mods[0]).__name__ if mods else '-'})", flush=True)
+        assert mods, "no forget-gate modules found"
         store = {}
         hooks = []
         for li, m in enumerate(mods):
