@@ -43,7 +43,7 @@ def main():
     exs = [e for e in exs if e["meta"]["target_total_tokens"] == 4096][:N]
     out = {}
     for name, ck in MODELS.items():
-        cfg = AutoConfig.from_pretrained(ck)
+        cfg = AutoConfig.from_pretrained(MODELS["FoX_ft_s42"])  # full run_clm-resolved config; same arch for all four
         apply_supply_cfg(cfg, R / "pat310_fox")  # supply_model.cfg-equivalent: wavelet off, K=1
         for k, v in dict(scale_range=[0, 16], sample_num=16, rel_selection="all", wavelet_mode="off",
                          wavelet_ctxscale_k=1, wavelet_ctxscale_scale_max_exp=16).items():
