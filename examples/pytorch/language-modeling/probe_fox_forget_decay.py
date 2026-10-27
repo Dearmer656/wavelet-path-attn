@@ -16,6 +16,8 @@ sys.path.insert(0, "/project/nlp-work5/hongyu-s/transformers/src")
 sys.path.insert(0, "/project/nlp-work5/hongyu-s/flash-linear-attention")
 import fla.layers.path_attn as pa
 from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
+sys.path.insert(0, str(Path(__file__).parent))
+from probe_path_transport_far_near import apply_supply_cfg
 
 R = Path("/project/nlp-work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs")
 HOTPOT = "/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/data/hotpot_long_dev.jsonl"
@@ -42,6 +44,10 @@ def main():
     out = {}
     for name, ck in MODELS.items():
         cfg = AutoConfig.from_pretrained(ck)
+        apply_supply_cfg(cfg, R / "pat310_fox")  # supply_model.cfg-equivalent: wavelet off, K=1
+        for k, v in dict(scale_range=[0, 16], sample_num=16, rel_selection="all", wavelet_mode="off",
+                         wavelet_ctxscale_k=1, wavelet_ctxscale_scale_max_exp=16).items():
+            if not hasattr(cfg, k) or k.startswith("wavelet"): setattr(cfg, k, v)
         cfg.path_attn_impl = "triton"; cfg.use_forget_gate = True
         model = AutoModelForCausalLM.from_pretrained(ck, config=cfg, torch_dtype=torch.float32).to(dev).eval()
         mods = [m for m in model.modules() if isinstance(m, pa.PaTHAttention) and getattr(m, "use_forget_gate", False)]
