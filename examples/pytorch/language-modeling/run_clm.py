@@ -44,6 +44,7 @@ from itertools import chain
 from typing import Optional
 import numpy as np
 import random
+import zlib
 import datasets
 import evaluate
 import torch
@@ -3394,7 +3395,7 @@ def _reorder_context_for_target_placement(ex, target_pct: float):
 
 
 def build_context_budgeted(ex, budget_tokens: int, prefer_same_title: bool = True, min_tokens: int = 0,
-                            respect_doc_order: bool = False):
+                            respect_doc_order: bool = False, support_offset_range=(0, 0)):
     """
     Always include supporting sentences. Then add shortest sentences until budget is hit.
     If prefer_same_title: fill from titles that appear in supporting_facts first.
@@ -3448,6 +3449,7 @@ def build_context_budgeted(ex, budget_tokens: int, prefer_same_title: bool = Tru
         ok = add_sent(t, sid)
         if not ok:
             return None, None, "supporting_over_budget"
+    n_support_selected = len(selected)
 
     # 2) build candidate pool (exclude supporting)
     # 候选：所有句子 (t, sid, text, len)
@@ -3506,6 +3508,24 @@ def build_context_budgeted(ex, budget_tokens: int, prefer_same_title: bool = Tru
     if respect_doc_order:
         title_order = _title_order_from_context(ex)
         selected.sort(key=lambda x: (title_order.get(x[0], len(title_order)), x[1]))
+    elif support_offset_range[1] > 0:
+        # PAT-310: keep evidence near the front but shift its start by a per-example offset
+        # drawn from U[lo, hi] context tokens (deterministic per example), by moving filler
+        # sentences from after the supporting block to before it. Off (0, 0) by default.
+        lo, hi = int(support_offset_range[0]), int(support_offset_range[1])
+        key = str(ex.get("_id", ex.get("id", ex.get("question", ""))))
+        target = random.Random(zlib.crc32(key.encode("utf-8"))).randint(lo, hi)
+        # Fillers from non-supporting titles go in front first, so the shifted-in text does not
+        # come from the evidence documents themselves.
+        sup, fill = selected[:n_support_selected], selected[n_support_selected:]
+        movable = [x for x in fill if x[0] not in sf_titles] + [x for x in fill if x[0] in sf_titles]
+        front, front_tok = [], 0
+        while movable and front_tok < target:
+            x = movable.pop(0)
+            front.append(x)
+            front_tok += x[4] + newline_cost
+        front_keys = {(x[0], x[1]) for x in front}
+        selected = front + sup + [x for x in fill if (x[0], x[1]) not in front_keys]
     context_text = "\n".join([x[2] for x in selected])
     context_ids = []
     for i, x in enumerate(selected):
@@ -5442,6 +5462,8 @@ def main():
                 prefer_same_title=True,
                 min_tokens=min_ctx_tokens,
                 respect_doc_order=respect_order,
+                support_offset_range=(int(getattr(config, "hotpot_support_offset_min", 0)),
+                                      int(getattr(config, "hotpot_support_offset_max", 0))),
             )
             if ctx_text is None:
                 return make_discard(0)
@@ -5781,6 +5803,8 @@ def main():
                 prefer_same_title=True,
                 min_tokens=min_ctx_tokens,
                 respect_doc_order=respect_order,
+                support_offset_range=(int(getattr(config, "hotpot_support_offset_min", 0)),
+                                      int(getattr(config, "hotpot_support_offset_max", 0))),
             )
             if ctx_text is None:
                 return make_discard(0)
