@@ -38,6 +38,7 @@ https://huggingface.co/models?filter=text-generation
 import logging
 import math
 import os
+import shutil
 import sys
 from dataclasses import dataclass, field
 from itertools import chain
@@ -5511,6 +5512,9 @@ def main():
                 "respect_doc_order": bool(getattr(config, "hotpot_respect_doc_order", False)),
                 "train_center_target_pct": float(getattr(config, "hotpot_train_center_target_pct", -1.0)),
             }
+            _off = (int(getattr(config, "hotpot_support_offset_min", 0)), int(getattr(config, "hotpot_support_offset_max", 0)))
+            if _off[1] > 0:  # only when on, so default-path cache hashes are unchanged
+                key["support_offset_range"] = list(_off)
             return hashlib.md5(json.dumps(key, sort_keys=True).encode("utf-8")).hexdigest()
 
         if training_args.do_train and not training_args.do_eval:
@@ -5870,6 +5874,9 @@ def main():
                 "respect_doc_order": bool(getattr(config, "hotpot_respect_doc_order", False)),
                 "train_center_target_pct": float(getattr(config, "hotpot_train_center_target_pct", -1.0)),
             }
+            _off = (int(getattr(config, "hotpot_support_offset_min", 0)), int(getattr(config, "hotpot_support_offset_max", 0)))
+            if _off[1] > 0:  # only when on, so default-path cache hashes are unchanged
+                key["support_offset_range"] = list(_off)
             return hashlib.md5(json.dumps(key, sort_keys=True).encode("utf-8")).hexdigest()
         if training_args.do_train and not training_args.do_eval:
             hotpot_cache_root = Path(getattr(data_args, "cache_dir", None) or os.path.expanduser("~/.cache/train_hotpot_qa_lm"))
@@ -5944,8 +5951,13 @@ def main():
                 target_ds[out_split] = filtered
 
             if getattr(training_args, "process_index", 0) == 0:
-                hotpot_cache_dir.mkdir(parents=True, exist_ok=True)
-                target_ds.save_to_disk(str(hotpot_cache_dir))
+                # write to a private tmp dir then rename, so concurrent jobs sharing a fingerprint never read a half-written cache
+                _tmp_dir = hotpot_cache_dir.parent / f"{hotpot_cache_dir.name}.tmp{os.getpid()}"
+                target_ds.save_to_disk(str(_tmp_dir))
+                try:
+                    os.rename(str(_tmp_dir), str(hotpot_cache_dir))
+                except OSError:
+                    shutil.rmtree(str(_tmp_dir), ignore_errors=True)
 
         if data_args.dataset_name == "mix":
             hotpot_qa_lm_datasets = target_ds
