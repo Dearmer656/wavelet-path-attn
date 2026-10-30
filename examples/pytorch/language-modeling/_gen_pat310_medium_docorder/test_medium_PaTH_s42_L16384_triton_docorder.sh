@@ -2,7 +2,7 @@
 #SBATCH --job-name=hp16384triton_medPaTH_s42_docorder
 #SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/logs/%j_medPaTH_s42_docorder_ckpt15000_hotpot16384.txt
 #SBATCH --partition=gpu_long
-#SBATCH --gres=gpu:a6000:1
+#SBATCH --gres=gpu:6000:1
 #SBATCH --time=100:00:00
 #SBATCH --exclude=elm72
 #SBATCH --ntasks=1
