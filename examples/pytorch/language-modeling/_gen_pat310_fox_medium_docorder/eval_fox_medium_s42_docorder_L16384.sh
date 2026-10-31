@@ -1,0 +1,23 @@
+#!/bin/bash
+#SBATCH --job-name=PAT310_foxmed_doc_L16384
+#SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/logs/%j_fox_medium_s42_docorder_L16384.txt
+#SBATCH --partition=gpu_long
+#SBATCH --gres=gpu:6000:2
+#SBATCH --exclude=elm72
+#SBATCH --time=100:00:00
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+# PAT-310: medium FoX (Forgetting Transformer, mix_medium_owt_fox_10ep_s42_a6000x4 ckpt-15000) HotpotQA-Long L16384 with the
+# evidence kept at its original document position (hotpot_respect_doc_order=True), same jsonl and condition as the paper's
+# medium PaTH s43/s44 + QWAB long-length evals (08-26..08-30 doc-order window). Otherwise identical to eval_fox_medium_mix_s42_hotpot_alllen.sh.
+set -euxo pipefail
+set +u; source /home/is/hongyu-s/miniconda3/etc/profile.d/conda.sh; conda activate latest_transformers; set -u
+export PYTHONPATH=/project/nlp-work5/hongyu-s/transformers/src:/project/nlp-work5/hongyu-s/flash-linear-attention:${PYTHONPATH:-}
+export HF_HOME=/cl/work5/hongyu-s/huggingfac
+export HF_DATASETS_CACHE=/cl/work5/hongyu-s/huggingfac/datasets
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+cd /cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling
+CKPT=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/mix_medium_owt_fox_10ep_s42_a6000x4/checkpoint-15000
+[ -d "${CKPT}" ] || { echo "Missing ${CKPT}" >&2; exit 1; }
+MASTER_PORT=$(( 17500 + SLURM_JOB_ID % 10000 ))
+python -m torch.distributed.run --nproc_per_node=2 --master_port=${MASTER_PORT} ./run_clm.py --model_type forgetting_transformer --tokenizer_name gpt2 --model_name_or_path "${CKPT}" --cfg_path /cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/_gen_pat310_fox_medium_docorder/cfgs/docorder.cfg --dataset_name hotpot_qa --dataset_config_name distractor --hotpot_long_jsonl /cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/data/hotpot_long_dev_uniform_16384_large_pool.jsonl --hotpot_long_lengths 16384 --do_eval --block_size 16384 --per_device_eval_batch_size 1 --output_dir /cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/results_uniform/pat310_fox_medium_s42_docorder_ckpt15000/L16384 --overwrite_output_dir --logging_dir /cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/results_uniform/pat310_fox_medium_s42_docorder_ckpt15000/L16384/log --seed 42 --load_best_model_at_end False
