@@ -29,6 +29,7 @@ CHECKPOINT="$R/checkpoint-15000"
 CFG_PATH="$R/supply_model.cfg"
 [ -d "\${CHECKPOINT}" ] || { echo "Missing \${CHECKPOINT}" >&2; exit 1; }
 cd "$LM"
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True  # as in _gen_pat310_repro (paper-reproducing L4096 evals); L4096 at 2 GPU x bs2 OOMs by ~1.5 GiB without it
 for BLOCK_SIZE in 512 2048 4096; do  # hotpot_long_dev_uniform.jsonl only holds the paper lengths 512/2048/4096
 OUTPUT_DIR="$RES/${N}_ckpt15000/L\${BLOCK_SIZE}"
 [ -f "\${OUTPUT_DIR}/eval_results.json" ] && continue
