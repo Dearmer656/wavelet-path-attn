@@ -5,6 +5,7 @@
 #   --use_forget_gate True, --path_attn_impl triton (forget gate only acts in the triton kernel), save every 1000 steps (model only).
 # Variants: b0 = default init of the new g_proj (HF _init_weights: weight~N(0,0.02), bias 0 -> retention ~0.5/token, as FoX reference);
 #           b5 = forget_gate_bias_init=5.0 (weight 0, bias 5 -> retention 0.9933/token, starts close to PaTH).
+# (b5 s42 runs on 2x a100-40GB at 8 x accum 4 = same global batch 64.)
 # Each train job is paired with a watcher eval job: every saved checkpoint, HotpotQA-Long L512/2048/4096, first 1000 examples, triton.
 set -e
 D=/project/nlp-work5/hongyu-s/transformers/examples/pytorch/language-modeling/_gen_pat310_medium_pathfox
