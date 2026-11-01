@@ -5143,9 +5143,8 @@ def main():
                         _gp.weight.zero_()
                         _gp.bias.fill_(float(_fg_bias))
                     _n_fg += 1
+            # _n_fg == 0 is expected when re-loading a checkpoint that already carries a trained g_proj (eval / resume).
             logger.info("[ForgetGateInit] set g_proj weight=0 bias=%s on %d freshly-initialized layers", _fg_bias, _n_fg)
-            if _n_fg == 0:
-                raise ValueError("forget_gate_bias_init is set but no missing g_proj was found in the loaded checkpoint")
         # BUGFIX: rotary_embedding_torch.RotaryEmbedding stores `freqs` as an
         # nn.Parameter (persistent, part of state_dict), not a buffer. GPT2Attention
         # .__init__ correctly builds it from config.rope_theta (and rescales it via
