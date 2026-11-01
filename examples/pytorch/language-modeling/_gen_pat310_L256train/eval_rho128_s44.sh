@@ -18,7 +18,7 @@ CHECKPOINT="/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/r
 CFG_PATH="/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/pat244_dual_temp/K1_L256_me14_rho128_ricker_s44/supply_model.cfg"
 [ -d "${CHECKPOINT}" ] || { echo "Missing ${CHECKPOINT}" >&2; exit 1; }
 cd "/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling"
-for BLOCK_SIZE in 256 512 1024 2048 4096; do
+for BLOCK_SIZE in 512 2048 4096; do  # hotpot_long_dev_uniform.jsonl only holds the paper lengths 512/2048/4096
 OUTPUT_DIR="/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/results_uniform/pat310_L256train/rho128_s44_ckpt15000/L${BLOCK_SIZE}"
 [ -f "${OUTPUT_DIR}/eval_results.json" ] && continue
 mkdir -p "${OUTPUT_DIR}"
