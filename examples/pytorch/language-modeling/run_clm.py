@@ -5128,6 +5128,24 @@ def main():
             model, loading_info = model_loaded
         else:
             model = model_loaded
+        # PAT-310: opt-in init for a PaTH forget gate (g_proj) added at finetune time on top of a
+        # checkpoint that has none (e.g. PaTH pretrain + --use_forget_gate True). Only touches g_proj
+        # tensors reported missing by from_pretrained: weight=0, bias=forget_gate_bias_init, so every
+        # head starts with the same per-token retention sigmoid(bias). No-op unless set via --cfg_path.
+        _fg_bias = getattr(config, "forget_gate_bias_init", None)
+        if _fg_bias is not None:
+            _missing = set((loading_info or {}).get("missing_keys", []) or [])
+            _n_fg = 0
+            for _name, _module in model.named_modules():
+                _gp = getattr(_module, "g_proj", None)
+                if isinstance(_gp, nn.Linear) and any(k.endswith(f"{_name}.g_proj.bias") for k in _missing):
+                    with torch.no_grad():
+                        _gp.weight.zero_()
+                        _gp.bias.fill_(float(_fg_bias))
+                    _n_fg += 1
+            logger.info("[ForgetGateInit] set g_proj weight=0 bias=%s on %d freshly-initialized layers", _fg_bias, _n_fg)
+            if _n_fg == 0:
+                raise ValueError("forget_gate_bias_init is set but no missing g_proj was found in the loaded checkpoint")
         # BUGFIX: rotary_embedding_torch.RotaryEmbedding stores `freqs` as an
         # nn.Parameter (persistent, part of state_dict), not a buffer. GPT2Attention
         # .__init__ correctly builds it from config.rope_theta (and rescales it via
