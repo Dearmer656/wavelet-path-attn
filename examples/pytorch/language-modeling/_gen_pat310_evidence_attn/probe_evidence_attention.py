@@ -79,8 +79,8 @@ def evaluate(self, *a, **k):
         for m in model.modules():
             if isinstance(m, cls): m._capture_debug_tensors = False
     else:
-        def hook(mod, inp, out):
-            h = inp[0] if len(inp) else None
+        def hook(mod, inp, kw, out):
+            h = inp[0] if len(inp) else kw['hidden_states']
             lid = int(mod.layer_idx)
             if lid == 0: new_example(h.shape[1])
             t = EX[STATE['cur']['k']]['t']
@@ -99,7 +99,7 @@ def evaluate(self, *a, **k):
                     STATE['fox_check'].append(float((mine - ref).norm() / ref.norm()))
             record(lid, row)
         for m in model.modules():
-            if m.__class__.__name__ == 'ForgettingAttention': m.register_forward_hook(hook)
+            if m.__class__.__name__ == 'ForgettingAttention': m.register_forward_hook(hook, with_kwargs=True)
     res = _orig_eval(self, *a, **k)
     rows = STATE['rows']
     print(f'[probe] forwards={len(rows)} shape mismatches={STATE["shape_bad"]} fox output check rel.err={STATE["fox_check"][:6]}', flush=True)
