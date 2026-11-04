@@ -1,0 +1,19 @@
+#!/bin/bash
+#SBATCH --job-name=T1_hp_alibi_s43_L16384
+#SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/results_pat310_table1/alibi_s43/L16384/%j_eval.txt
+#SBATCH --partition=gpu_long
+#SBATCH --gres=gpu:p6000:2
+#SBATCH --time=100:00:00
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+# PAT-310 Table 1: alibi medium s43 HotpotQA-Long L16384, args of the s42 Table 1 eval (2 GPUs, bs 1, hotpot_long_dev_uniform_16384_large_pool.jsonl), full set, checkpoint-15000.
+set -euxo pipefail
+set +u; source /home/is/hongyu-s/miniconda3/etc/profile.d/conda.sh; conda activate latest_transformers; set -u
+export PYTHONPATH=/project/nlp-work5/hongyu-s/transformers/src:/project/nlp-work5/hongyu-s/flash-linear-attention${PYTHONPATH:+:${PYTHONPATH}}
+export HF_HOME=/cl/work5/hongyu-s/huggingfac HF_DATASETS_CACHE=/cl/work5/hongyu-s/huggingfac/datasets WANDB_DISABLED=true WANDB_MODE=disabled PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True SKIP_FENICE=1 SKIP_SUMMAC=1
+cd /cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling
+CKPT=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/mix_medium_owt_alibi_10ep_s43_fp32/checkpoint-15000
+[ -d "${CKPT}" ] || { echo "Missing ${CKPT}" >&2; exit 1; }
+MASTER_PORT=$(( 20000 + SLURM_JOB_ID % 10000 ))
+/cl/work5/hongyu-s/conda/envs/latest_transformers/bin/torchrun --nproc_per_node=2 --master_port="${MASTER_PORT}" ./run_clm.py --model_type gpt2 --tokenizer_name gpt2 --model_name_or_path "${CKPT}" --attn_implementation eager --pe_method alibi  --dataset_name hotpot_qa --dataset_config_name distractor --hotpot_long_jsonl /cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/data/hotpot_long_dev_uniform_16384_large_pool.jsonl --hotpot_long_lengths 16384 --do_eval --block_size 16384 --per_device_eval_batch_size 1 --output_dir /cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/results_pat310_table1/alibi_s43/L16384 --overwrite_output_dir --logging_dir /cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/results_pat310_table1/alibi_s43/L16384/log --load_best_model_at_end False --seed 42
+python3 -c "import json; d=json.load(open('/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/hotpot_long/results_pat310_table1/alibi_s43/L16384/eval_results.json')); print('alibi s43 L16384 F1=%.2f EM=%.2f n=%d' % (100*d['eval_f1'], 100*d['eval_em'], d['eval_samples']))"
