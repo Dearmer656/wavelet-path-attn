@@ -10,8 +10,12 @@ ids = torch.randint(0, 50257, (1, 512), generator=torch.Generator().manual_seed(
 def load(ck, impl, gate, mode=None):
     c = AutoConfig.from_pretrained(ck); c.path_attn_impl = impl; c.use_forget_gate = gate; c.attn_pdrop = c.resid_pdrop = c.embd_pdrop = 0.0
     if mode: c.wavelet_mode = mode
-    m = GPT2LMHeadModel.from_pretrained(ck, config=c).to(dev).eval()
-    return m
+    c.attn_implementation = 'path_attn'  # AutoConfig drops it from config.json; GPT2Block reads it to build PaTH
+    m, info = GPT2LMHeadModel.from_pretrained(ck, config=c, output_loading_info=True)
+    miss = [k for k in info['missing_keys'] if 'g_proj' not in k]; unexp = [k for k in info['unexpected_keys'] if not (not gate and 'g_proj' in k)]
+    print('load', ck.split('/')[-2], impl, 'gate', gate, 'missing', miss[:5], 'unexpected', unexp[:5], 'gates', sum(n.endswith('g_proj') for n, _ in m.named_modules()))
+    assert not miss and not unexp
+    return m.to(dev).eval()
 def gates(m): return [x for n, x in m.named_modules() if n.endswith('g_proj')]
 def set_gate(m, b, src=None):
     with torch.no_grad():
