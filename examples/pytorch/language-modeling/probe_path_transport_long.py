@@ -81,6 +81,9 @@ def rows_by_recurrence(layers):
 
 def load_model(ck, impl, dev):
     cfg = AutoConfig.from_pretrained(ck); P.apply_supply_cfg(cfg, ck.parent)
+    kk = int(getattr(cfg, "wavelet_ctxscale_k", 1) or 1)  # PaTH ckpts carry unused K=8 ctxscale params (as in P.run_model)
+    mx = getattr(cfg, "wavelet_ctxscale_scale_max_exp", 14.0)
+    if kk > 1 and not isinstance(mx, (list, tuple)): cfg.wavelet_ctxscale_scale_max_exp = [float(mx)] * kk
     cfg.attn_implementation = "path_attn"; cfg.path_attn_impl = impl
     cfg.wavelet_logit_bias_log_every = 10 ** 9; cfg.wavelet_ctxscale_eval_log_once = False
     model = AutoModelForCausalLM.from_pretrained(ck, config=cfg, torch_dtype=torch.float32).to(dev).eval()
