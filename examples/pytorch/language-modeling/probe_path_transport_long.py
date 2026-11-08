@@ -81,7 +81,8 @@ def rows_by_recurrence(layers):
 
 def load_model(ck, impl, dev):
     cfg = AutoConfig.from_pretrained(ck); P.apply_supply_cfg(cfg, ck.parent)
-    kk = int(getattr(cfg, "wavelet_ctxscale_k", 1) or 1)  # PaTH ckpts carry unused K=8 ctxscale params (as in P.run_model)
+    if not hasattr(cfg, "wavelet_ctxscale_k"): cfg.wavelet_ctxscale_k = 8  # PaTH ckpts carry unused K=8 ctxscale params (as in P.run_model)
+    kk = int(cfg.wavelet_ctxscale_k or 1)
     mx = getattr(cfg, "wavelet_ctxscale_scale_max_exp", 14.0)
     if kk > 1 and not isinstance(mx, (list, tuple)): cfg.wavelet_ctxscale_scale_max_exp = [float(mx)] * kk
     cfg.attn_implementation = "path_attn"; cfg.path_attn_impl = impl
