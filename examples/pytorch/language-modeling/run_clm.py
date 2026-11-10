@@ -5037,6 +5037,7 @@ def main():
         n_reset_missing_a = 0
         n_reset_missing_mlp_a = 0
         n_reset_missing_k1 = 0
+        n_reset_missing_ctxscale = 0
         n_sanitize_a = 0
         n_sanitize_mlp_a = 0
         n_sanitize_k1 = 0
@@ -5090,7 +5091,19 @@ def main():
                     if not bool(p.requires_grad):
                         p.requires_grad_(True)
                         n_reqgrad_fix += 1
+                elif name.endswith("wavelet_ctxscale_g0_param") or name.endswith("wavelet_ctxscale_ratio_param"):
+                    # PAT-310: raw logits defined as torch.zeros in PaTHAttention.__init__ (sigmoid -> 0.5), but when the
+                    # key is missing from the pretrained ckpt from_pretrained leaves uninitialized memory (observed 1e38 /
+                    # 2e11 / -1.2). Restore the intended zero init.
+                    data = p.detach().float()
+                    if (reset_missing and (name in missing)) or (not torch.isfinite(data).all()) or (float(data.abs().max().item()) > abs_max):
+                        p.fill_(0.0)
+                        n_reset_missing_ctxscale += 1
+                    if not bool(p.requires_grad):
+                        p.requires_grad_(True)
+                        n_reqgrad_fix += 1
 
+        logger.info("[WaveletInitSanity] reset_ctxscale_g0_or_ratio_param=%d", int(n_reset_missing_ctxscale))
         logger.info(
             "[WaveletInitSanity] reset_missing_a=%d reset_missing_mlp_a=%d reset_missing_k1=%d "
             "sanitize_a=%d sanitize_mlp_a=%d sanitize_k1=%d reqgrad_fix=%d "
