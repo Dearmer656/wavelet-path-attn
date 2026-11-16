@@ -2,7 +2,7 @@
 #SBATCH --job-name=PAT_perhead_s46_resume5000_2g
 #SBATCH --output=/cl/work5/hongyu-s/transformers/examples/pytorch/language-modeling/runs/pat244_dual_temp/perheadrouter_K1_L512_me16_rho256_detach_s46/train/%j_perheadrouter_K1_L512_me16_rho256_detach_s46_resume5000_2g.txt
 #SBATCH --partition=gpu_long
-#SBATCH --gres=gpu:a100:2
+#SBATCH --gres=gpu:p6000:2
 #SBATCH --exclude=elm72,elm26
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
